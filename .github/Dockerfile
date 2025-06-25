@@ -1,13 +1,13 @@
-FROM ghcr.io/spinalhdl/docker:verilator-v5.022 AS base
+FROM ghcr.io/spinalhdl/docker:master AS base
 
 ARG JAVA_EXTRA_OPTS="-Xmx2g -Xms2g"
 ENV JAVA_OPTS="${JAVA_OPTS} ${JAVA_EXTRA_OPTS}"
 
 FROM base AS builder
 
-RUN git clone https://github.com/SpinalHDL/SpinalHDL.git && \ 
+RUN git clone https://github.com/jaynerlin/SpinalHDL.git && \ 
     cd SpinalHDL && \
-    git checkout master && \
+    git checkout my_fix && \
     git submodule update --init --recursive && \
     sbt +clean +reload +compile && \
     sbt +publishLocal
