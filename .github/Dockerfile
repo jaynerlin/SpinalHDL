@@ -1,4 +1,4 @@
-FROM ghcr.io/jaynerlin/docker:verilator-v5.022 AS base
+FROM ghcr.io/jaynerlin/docker:verilator-v5.024 AS base
 
 ARG JAVA_EXTRA_OPTS="-Xmx2g -Xms2g"
 ENV JAVA_OPTS="${JAVA_OPTS} ${JAVA_EXTRA_OPTS}"
