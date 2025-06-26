@@ -2496,7 +2496,7 @@ object SgDmaTestsParameter{
       lengthWidth  = 2
     )
 
-    val compiled = SimConfig.withConfig(SpinalConfig(dontCareGenAsZero=false)).withFstWave.compile(new DmaSg.Core[Bmb](p, ctrlType = HardType(Bmb(pCtrl)), BmbSlaveFactory(_)))
+    val compiled = SimConfig.withConfig(SpinalConfig(dontCareGenAsZero=false)).doWorkspaceCleanup().withFstWave.compile(new DmaSg.Core[Bmb](p, ctrlType = HardType(Bmb(pCtrl)), BmbSlaveFactory(_)))
     compiled.doSim{ dut =>
       disableSimWave()
       dut.clockDomain.forkStimulus(10)

@@ -701,7 +701,8 @@ case class SpinalSimConfig(
                             var _timeScale         : TimeNumber = null,
                             var _testPath          : String = "$WORKSPACE/$COMPILED/$TEST",
                             var _waveFilePrefix    : String = null,
-                            var _ghdlFlags: GhdlFlags = GhdlFlags()
+                            var _ghdlFlags: GhdlFlags = GhdlFlags(),
+                            var _doWorkspaceCleanup: Boolean = false
   ){
 
 
@@ -1100,6 +1101,9 @@ case class SpinalSimConfig(
                 }
               }
             } finally {
+              if(_doWorkspaceCleanup) {
+                FileUtils.deleteQuietly(new File(s"${_workspacePath}/${_workspaceName}"))
+              }
               super.finalize()
             }
           }
@@ -1228,6 +1232,11 @@ case class SpinalSimConfig(
           }
         }
     }
+  }
+
+  def doWorkspaceCleanup(): this.type = {
+    _doWorkspaceCleanup = true
+    this
   }
 }
 
