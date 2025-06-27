@@ -7,7 +7,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: jaynerlin/docker:verilator-v5.022
+  IMAGE_NAME: jaynerlin/docker:verilator-v5.036
 
 jobs:
   build-and-push:
