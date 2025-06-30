@@ -11,13 +11,16 @@ on:
       github_sha:
         required: true
         type: string
+      verilator_version:
+        required: true
+        type: string
 
 jobs:
     compile:
         runs-on: ubuntu-latest
         timeout-minutes: 90
         container:
-          image: ghcr.io/spinalhdl/docker:latest
+          image: ghcr.io/spinalhdl/docker:${{ inputs.verilator_version }}
         steps:
         - uses: actions/checkout@v3
         - name: Get submodules
@@ -35,7 +38,7 @@ jobs:
         runs-on: ubuntu-latest
         timeout-minutes: 90
         container:
-          image: ghcr.io/spinalhdl/docker:latest
+          image: ghcr.io/spinalhdl/docker:${{ inputs.verilator_version }}
         steps:
         - uses: actions/checkout@v3
         - uses: ./.github/actions/get-compiled
@@ -46,7 +49,7 @@ jobs:
         runs-on: ubuntu-latest
         timeout-minutes: 90
         container:
-          image: ghcr.io/spinalhdl/docker:latest
+          image: ghcr.io/spinalhdl/docker:${{ inputs.verilator_version }}
         steps:
         - uses: actions/checkout@v3
         - uses: ./.github/actions/get-compiled
@@ -57,7 +60,7 @@ jobs:
         runs-on: ubuntu-latest
         timeout-minutes: 90
         container:
-          image: ghcr.io/spinalhdl/docker:latest
+          image: ghcr.io/spinalhdl/docker:${{ inputs.verilator_version }}
         steps:
         - uses: actions/checkout@v3
         - uses: ./.github/actions/get-compiled
@@ -69,7 +72,7 @@ jobs:
         runs-on: ubuntu-latest
         timeout-minutes: 90
         container:
-          image: ghcr.io/spinalhdl/docker:latest
+          image: ghcr.io/spinalhdl/docker:${{ inputs.verilator_version }}
         steps:
         - uses: actions/checkout@v3
         - uses: ./.github/actions/get-compiled
@@ -80,7 +83,7 @@ jobs:
           runs-on: ubuntu-latest
           timeout-minutes: 90
           container:
-            image: ghcr.io/spinalhdl/docker:latest
+            image: ghcr.io/spinalhdl/docker:${{ inputs.verilator_version }}
           steps:
           - uses: actions/checkout@v3
           - uses: ./.github/actions/get-compiled
@@ -91,7 +94,7 @@ jobs:
         runs-on: ubuntu-latest
         timeout-minutes: 90
         container:
-          image: ghcr.io/spinalhdl/docker:latest
+          image: ghcr.io/spinalhdl/docker:${{ inputs.verilator_version }}
         steps:
         - uses: actions/checkout@v3
         - uses: ./.github/actions/get-compiled
@@ -102,7 +105,7 @@ jobs:
         runs-on: ubuntu-latest
         timeout-minutes: 90
         container:
-          image: ghcr.io/spinalhdl/docker:latest
+          image: ghcr.io/spinalhdl/docker:${{ inputs.verilator_version }}
         steps:
         - uses: actions/checkout@v3
         - uses: ./.github/actions/get-compiled
@@ -113,7 +116,7 @@ jobs:
         runs-on: ubuntu-latest
         timeout-minutes: 90
         container:
-          image: ghcr.io/spinalhdl/docker:latest
+          image: ghcr.io/spinalhdl/docker:${{ inputs.verilator_version }}
         steps:
         - uses: actions/checkout@v3
         - uses: ./.github/actions/get-compiled
@@ -124,7 +127,7 @@ jobs:
         runs-on: ubuntu-latest
         timeout-minutes: 90
         container:
-          image: ghcr.io/spinalhdl/docker:latest
+          image: ghcr.io/spinalhdl/docker:${{ inputs.verilator_version }}
         steps:
         - uses: actions/checkout@v3
         - uses: ./.github/actions/get-compiled
@@ -135,7 +138,7 @@ jobs:
         runs-on: ubuntu-latest
         timeout-minutes: 90
         container:
-          image: ghcr.io/spinalhdl/docker:latest
+          image: ghcr.io/spinalhdl/docker:${{ inputs.verilator_version }}
         steps:
         - uses: actions/checkout@v3
         - uses: ./.github/actions/get-compiled
@@ -147,7 +150,7 @@ jobs:
         runs-on: ubuntu-latest
         timeout-minutes: 90
         container:
-          image: ghcr.io/spinalhdl/docker:latest
+          image: ghcr.io/spinalhdl/docker:${{ inputs.verilator_version }}
         steps:
         - uses: actions/checkout@v3
         - uses: ./.github/actions/get-compiled
@@ -159,7 +162,7 @@ jobs:
           runs-on: ubuntu-latest
           timeout-minutes: 90
           container:
-            image: ghcr.io/spinalhdl/docker:latest
+            image: ghcr.io/spinalhdl/docker:${{ inputs.verilator_version }}
           steps:
           - uses: actions/checkout@v3
           - uses: ./.github/actions/get-compiled

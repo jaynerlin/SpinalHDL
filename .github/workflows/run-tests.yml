@@ -18,6 +18,8 @@ on:
           - 'V5.022'
           - 'V5.024'
           - 'V5.036'
+          - 'v5.024_without-5016'
+          - 'v5.022_with-5016'
 
 jobs:
   run-sbt-tests:
