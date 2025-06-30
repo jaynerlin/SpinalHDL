@@ -7,7 +7,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: jaynerlin/docker:v5.024_without#5016 // 要推送的镜像名
+  IMAGE_NAME: jaynerlin/docker:v5.024_without-5016
 
 jobs:
   build-and-push:
