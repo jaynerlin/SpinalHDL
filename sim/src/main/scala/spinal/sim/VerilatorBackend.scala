@@ -255,7 +255,7 @@ public:
     uint32_t timeCheck;
     bool waveEnabled;
     bool gotFinish;
-    //VerilatedContext* contextp; //Buggy in multi threaded spinalsim
+    VerilatedContext* contextp;  // 恢复上下文支持
     V${config.toplevelName} *top;
     ISignalAccess *signalAccess[${config.signals.length}];
     #ifdef TRACE
@@ -265,9 +265,10 @@ public:
     int32_t time_precision;
 
     Wrapper_${uniqueId}(const char * name, const char * wavePath, int seed){
-      //contextp = new VerilatedContext;
-      Verilated::randReset(2);
-      Verilated::randSeed(seed);
+      contextp = new VerilatedContext;
+      contextp->randReset(2);
+      contextp->randSeed(seed);
+      
       // Verilator v5.026+ calls time() inside Vtop::Vtop()
       // initialize the simHandle before we call Vtop
       simHandle${uniqueId} = this;
@@ -321,10 +322,11 @@ ${    val signalInits = for((signal, id) <- config.signals.zipWithIndex) yield {
       // Verilated::runFlushCallbacks();
       // Verilated::runExitCallbacks();
 
-      //contextp->threadContextp()->gotFinish(true);
-      top->final();
-      delete top;
-      //delete contextp;
+      // 第5步：释放Verilator模块
+      //contextp->threadContextp()->gotFinish(true);                                       // 设置完成标志（可选）
+      top->final();                                                                         // 调用Verilator final()方法
+      delete top;                                                                           // 释放顶层模块实例
+      delete contextp;                                                                    // 释放上下文（注释掉避免潜在问题）
     }
 
 };
