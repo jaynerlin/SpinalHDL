@@ -1,3 +1,43 @@
+/**
+ * Verilator后端编译引擎实现文件
+ *
+ * 文件作用：
+ * 这是SpinalHDL仿真系统中Verilator后端的核心实现，负责将RTL代码编译为
+ * 可执行的Verilator仿真模型，并生成JNI接口用于Java与C++模型的交互。
+ *
+ * 在仿真流程中的位置：
+ * SpinalVerilatorBackend -> VerilatorBackend -> Verilator工具链 -> C++编译器 -> 动态库
+ *
+ * 主要功能：
+ * 1. 编译管理：
+ *    - 调用Verilator工具将RTL代码转换为C++模型
+ *    - 生成JNI包装器代码用于Java-C++交互
+ *    - 编译C++代码为动态链接库
+ *    - 动态编译和加载Java JNI接口类
+ *
+ * 2. 缓存系统：
+ *    - 基于内容哈希的智能缓存机制
+ *    - 自动管理缓存生命周期和存储空间
+ *    - 支持并发访问的线程安全缓存
+ *
+ * 3. 平台适配：
+ *    - 支持Windows、Linux、macOS多平台编译
+ *    - 自动检测和配置JDK环境
+ *    - 处理不同架构的编译标志
+ *
+ * 4. 仿真控制：
+ *    - 创建和管理仿真实例
+ *    - 配置波形记录（VCD/FST格式）
+ *    - 支持代码覆盖率分析
+ *    - 提供时间精度控制
+ *
+ * 核心组件：
+ * - VerilatorBackendConfig: 配置管理
+ * - VerilatorBackend: 主要编译引擎
+ * - C++包装器生成: JNI接口代码生成
+ * - Java动态编译: 运行时Java类生成和加载
+ */
+
 package spinal.sim
 
 import java.io.{File, PrintWriter}
@@ -17,42 +57,58 @@ import java.io.BufferedInputStream
 import java.io.FileInputStream
 import java.io.FileFilter
 
+/**
+ * Verilator后端配置类
+ * 包含Verilator仿真器的所有配置参数
+ */
 class VerilatorBackendConfig{
-  var signals                = ArrayBuffer[Signal]()
-  var optimisationLevel: Int = 2
-  val rtlSourcesPaths        = ArrayBuffer[String]()
-  val rtlIncludeDirs         = ArrayBuffer[String]()
-  var toplevelName: String   = null
-  var maxCacheEntries: Int   = 100
-  var cachePath: String      = null
-  var workspacePath: String  = null
-  var workspaceName: String  = null
-  var vcdPath: String        = null
-  var vcdPrefix: String      = null
-  var waveFormat             : WaveFormat = WaveFormat.NONE
-  var waveDepth:Int          = 1 // 0 => all
-  var simulatorFlags         = ArrayBuffer[String]()
-  var withCoverage           = false
-  var timePrecision: String  = null
+  var signals                = ArrayBuffer[Signal]()      // 需要访问的信号列表
+  var optimisationLevel: Int = 2                          // 优化级别 (0-3)
+  val rtlSourcesPaths        = ArrayBuffer[String]()      // RTL源文件路径列表
+  val rtlIncludeDirs         = ArrayBuffer[String]()      // 包含目录列表
+  var toplevelName: String   = null                       // 顶层模块名称
+  var maxCacheEntries: Int   = 100                        // 最大缓存条目数
+  var cachePath: String      = null                       // 缓存路径
+  var workspacePath: String  = null                       // 工作空间路径
+  var workspaceName: String  = null                       // 工作空间名称
+  var vcdPath: String        = null                       // VCD波形文件路径
+  var vcdPrefix: String      = null                       // VCD文件前缀
+  var waveFormat             : WaveFormat = WaveFormat.NONE // 波形格式 (VCD/FST/NONE)
+  var waveDepth:Int          = 1                          // 波形深度 (0表示全部)
+  var simulatorFlags         = ArrayBuffer[String]()      // 仿真器标志
+  var withCoverage           = false                      // 是否启用覆盖率
+  var timePrecision: String  = null                       // 时间精度
 }
 
-
+/**
+ * Verilator后端对象
+ * 管理全局缓存锁和路径锁映射
+ */
 object VerilatorBackend {
-  private val cacheGlobalLock = new Object()
-  private val cachePathLockMap = mutable.HashMap[String, Object]()
+  private val cacheGlobalLock = new Object()                    // 全局缓存锁
+  private val cachePathLockMap = mutable.HashMap[String, Object]() // 缓存路径锁映射
 }
 
+/**
+ * Verilator后端实现类
+ * 负责编译和管理Verilator仿真器
+ * @param config Verilator配置对象
+ */
 class VerilatorBackend(val config: VerilatorBackendConfig) extends Backend {
   import Backend._
 
-  val cachePath      = config.cachePath
-  val cacheEnabled   = cachePath != null
-  val maxCacheEntries = config.maxCacheEntries
-  val workspaceName  = config.workspaceName
-  val workspacePath  = config.workspacePath
-  val wrapperCppName = s"V${config.toplevelName}__spinalWrapper.cpp"
-  val wrapperCppPath = new File(s"${workspacePath}/${workspaceName}/$wrapperCppName").getAbsolutePath
+  val cachePath      = config.cachePath                   // 缓存路径
+  val cacheEnabled   = cachePath != null                  // 是否启用缓存
+  val maxCacheEntries = config.maxCacheEntries            // 最大缓存条目数
+  val workspaceName  = config.workspaceName               // 工作空间名称
+  val workspacePath  = config.workspacePath               // 工作空间路径
+  val wrapperCppName = s"V${config.toplevelName}__spinalWrapper.cpp" // C++包装器文件名
+  val wrapperCppPath = new File(s"${workspacePath}/${workspaceName}/$wrapperCppName").getAbsolutePath // C++包装器完整路径
 
+  /**
+   * 全局缓存同步方法
+   * 如果启用缓存则使用全局锁，否则直接执行
+   */
   def cacheGlobalSynchronized(function: => Unit) = {
     if (cacheEnabled) {
       VerilatorBackend.cacheGlobalLock.synchronized {
@@ -63,6 +119,10 @@ class VerilatorBackend(val config: VerilatorBackendConfig) extends Backend {
     }
   }
 
+  /**
+   * 缓存文件同步方法
+   * 为特定缓存文件提供同步访问控制
+   */
   def cacheSynchronized(cacheFile: File)(function: => Unit): Unit = {
     if (cacheEnabled) {
       var lock: Object = null
@@ -78,207 +138,454 @@ class VerilatorBackend(val config: VerilatorBackendConfig) extends Backend {
     }
   }
 
+  /**
+   * 清理工作空间
+   * 删除工作空间目录及其所有内容
+   */
   def clean(): Unit = {
     FileUtils.deleteQuietly(new File(s"${workspacePath}/${workspaceName}"))
   }
 
-  val availableFormats = Array(WaveFormat.VCD, WaveFormat.FST, 
+  // Verilator支持的波形格式
+  val availableFormats = Array(WaveFormat.VCD, WaveFormat.FST,
                                WaveFormat.DEFAULT, WaveFormat.NONE)
 
+  // 选择有效的波形格式，如果不支持则使用NONE
   val format = if(availableFormats contains config.waveFormat){
-                config.waveFormat  
+                config.waveFormat
               } else {
                 println("Wave format " + config.waveFormat + " not supported by Verilator")
                 WaveFormat.NONE
               }
 
+  /**
+   * 生成C++包装器代码
+   *
+   * 功能说明：
+   * 这个方法生成一个完整的C++包装器文件，作为Java和Verilator编译的C++模型之间的桥梁。
+   * 包装器包含以下核心组件：
+   * 1. 信号访问类层次结构 - 为不同位宽的信号提供统一访问接口
+   * 2. Wrapper类 - 管理Verilator仿真实例的生命周期
+   * 3. JNI函数 - 提供Java可调用的本地方法
+   * 4. 时间管理和波形记录功能
+   *
+   * 设计模式：
+   * - 策略模式：不同的信号访问类处理不同位宽的信号
+   * - 外观模式：Wrapper类为复杂的Verilator接口提供简化的访问方式
+   * - 适配器模式：JNI函数将Java调用适配到C++方法
+   *
+   * @param useTimePrecision 是否使用Verilator 4.034+的新时间精度API
+   */
   def genWrapperCpp(useTimePrecision: Boolean = true): Unit = {
+    // 生成JNI函数名前缀，遵循JNI命名规范
+    // 将下划线替换为_1以符合JNI规范
     val jniPrefix = "Java_" + s"wrapper_${workspaceName}".replace("_", "_1") + "_VerilatorNative_"
-    val wrapperString = s"""
-#include <stdint.h>
-#include <string>
-#include <memory>
-#include <jni.h>
-#include <iostream>
 
-#include "V${config.toplevelName}.h"
+    val wrapperString = s"""
+/*
+ * SpinalHDL Verilator C++包装器代码
+ *
+ * 文件作用：
+ * 这是SpinalHDL仿真系统自动生成的C++包装器，提供Java与Verilator编译的
+ * C++硬件模型之间的JNI接口。它封装了Verilator的复杂性，为Java层
+ * 提供简洁统一的信号访问和仿真控制接口。
+ *
+ * 主要组件：
+ * 1. 信号访问类 - 处理不同位宽信号的读写操作
+ * 2. 仿真包装器类 - 管理Verilator实例和仿真状态
+ * 3. JNI接口函数 - 提供Java可调用的本地方法
+ * 4. 时间和波形管理 - 处理仿真时间推进和波形记录
+ *
+ * 生成时间：编译时自动生成
+ * 目标模块：${config.toplevelName}
+ * 信号数量：${config.signals.length}
+ */
+
+// ============================================================================
+// 头文件包含区域
+// ============================================================================
+
+#include <stdint.h>        // 标准整数类型定义
+#include <string>          // C++字符串类
+#include <memory>          // 智能指针支持
+#include <jni.h>           // Java本地接口
+#include <iostream>        // 标准输入输出流
+
+// Verilator生成的头文件
+#include "V${config.toplevelName}.h"                    // 顶层模块类定义
 #ifdef TRACE
-#include "verilated_${format.ext}_c.h"
+#include "verilated_${format.ext}_c.h"                  // 波形记录支持（VCD/FST）
 #endif
-#include "V${config.toplevelName}__Syms.h"
+#include "V${config.toplevelName}__Syms.h"              // Verilator符号表
 
 using namespace std;
 
+// ============================================================================
+// 信号访问接口类层次结构
+// ============================================================================
+
+/**
+ * 信号访问接口基类
+ *
+ * 设计目的：
+ * 为不同位宽的Verilator信号提供统一的访问接口。Verilator根据信号位宽
+ * 使用不同的C++数据类型（CData、SData、IData、QData、WData），这个
+ * 接口层隐藏了这些差异，为Java层提供一致的访问方式。
+ *
+ * 接口设计：
+ * - 所有读取方法都返回uint64_t，提供统一的数据格式
+ * - 支持普通信号和内存信号（数组）的访问
+ * - 支持64位整数和字节数组两种数据传输方式
+ * - 使用虚函数实现多态，子类根据具体数据类型实现
+ */
 class ISignalAccess{
 public:
   virtual ~ISignalAccess() {}
 
-  virtual void getAU8(JNIEnv *env, jbyteArray value) {}
-  virtual void getAU8_mem(JNIEnv *env, jbyteArray value, size_t index) {}
-  virtual void setAU8(JNIEnv *env, jbyteArray value, int length) {}
-  virtual void setAU8_mem(JNIEnv *env, jbyteArray value, int length, size_t index) {}
+  // 字节数组访问方法（用于超过64位的大信号）
+  virtual void getAU8(JNIEnv *env, jbyteArray value) {}                                    // 读取信号到Java字节数组
+  virtual void getAU8_mem(JNIEnv *env, jbyteArray value, size_t index) {}                  // 读取内存信号到Java字节数组
+  virtual void setAU8(JNIEnv *env, jbyteArray value, int length) {}                        // 从Java字节数组写入信号
+  virtual void setAU8_mem(JNIEnv *env, jbyteArray value, int length, size_t index) {}      // 从Java字节数组写入内存信号
 
-  virtual uint64_t getU64() = 0;
-  virtual uint64_t getU64_mem(size_t index) = 0;
-  virtual void setU64(uint64_t value) = 0;
-  virtual void setU64_mem(uint64_t value, size_t index) = 0;
+  // 64位整数访问方法（用于64位及以下的信号，是主要的访问方式）
+  virtual uint64_t getU64() = 0;                                                           // 读取信号值（纯虚函数，必须实现）
+  virtual uint64_t getU64_mem(size_t index) = 0;                                           // 读取内存信号值（纯虚函数，必须实现）
+  virtual void setU64(uint64_t value) = 0;                                                 // 设置信号值（纯虚函数，必须实现）
+  virtual void setU64_mem(uint64_t value, size_t index) = 0;                               // 设置内存信号值（纯虚函数，必须实现）
 };
 
-class  CDataSignalAccess : public ISignalAccess{
+/**
+ * CData信号访问类（1-8位信号）
+ *
+ * 适用范围：处理1到8位的信号
+ * 底层类型：CData (uint8_t)
+ */
+class CDataSignalAccess : public ISignalAccess{
 public:
-    CData *raw;
-    CDataSignalAccess(CData *raw) : raw(raw){}
-    CDataSignalAccess(CData &raw) : raw(addressof(raw)){}
-    uint64_t getU64() {return *raw;}
-    uint64_t getU64_mem(size_t index) {return raw[index];}
-    void setU64(uint64_t value)  {*raw = value; }
-    void setU64_mem(uint64_t value, size_t index){raw[index] = value; }
+    CData *raw;                                                                             // 指向Verilator CData的指针
+
+    CDataSignalAccess(CData *raw) : raw(raw){}                                              // 指针构造函数
+    CDataSignalAccess(CData &raw) : raw(addressof(raw)){}                                   // 引用构造函数
+
+    uint64_t getU64() {return *raw;}                                                        // 读取8位值并扩展为64位
+    uint64_t getU64_mem(size_t index) {return raw[index];}                                  // 读取数组元素
+    void setU64(uint64_t value) {*raw = value;}                                             // 写入值（自动截断到8位）
+    void setU64_mem(uint64_t value, size_t index){raw[index] = value;}                      // 写入数组元素
 };
 
-
-class  SDataSignalAccess : public ISignalAccess{
+/**
+ * SData信号访问类（9-16位信号）
+ *
+ * 适用范围：处理9到16位的信号
+ * 底层类型：SData (uint16_t)
+ */
+class SDataSignalAccess : public ISignalAccess{
 public:
-    SData *raw;
-    SDataSignalAccess(SData *raw) : raw(raw){}
-    SDataSignalAccess(SData &raw) : raw(addressof(raw)){}
-    uint64_t getU64() {return *raw;}
-    uint64_t getU64_mem(size_t index) {return raw[index];}
-    void setU64(uint64_t value)  {*raw = value; }
-    void setU64_mem(uint64_t value, size_t index){raw[index] = value; }
+    SData *raw;                                                                             // 指向Verilator SData的指针
+
+    SDataSignalAccess(SData *raw) : raw(raw){}                                              // 指针构造函数
+    SDataSignalAccess(SData &raw) : raw(addressof(raw)){}                                   // 引用构造函数
+
+    uint64_t getU64() {return *raw;}                                                        // 读取16位值并扩展为64位
+    uint64_t getU64_mem(size_t index) {return raw[index];}                                  // 读取数组元素
+    void setU64(uint64_t value) {*raw = value;}                                             // 写入值（自动截断到16位）
+    void setU64_mem(uint64_t value, size_t index){raw[index] = value;}                      // 写入数组元素
 };
 
-
-class  IDataSignalAccess : public ISignalAccess{
+/**
+ * IData信号访问类（17-32位信号）
+ *
+ * 适用范围：处理17到32位的信号
+ * 底层类型：IData (uint32_t)
+ */
+class IDataSignalAccess : public ISignalAccess{
 public:
-    IData *raw;
-    IDataSignalAccess(IData *raw) : raw(raw){}
-    IDataSignalAccess(IData &raw) : raw(addressof(raw)){}
-    uint64_t getU64() {return *raw;}
-    uint64_t getU64_mem(size_t index) {return raw[index];}
-    void setU64(uint64_t value)  {*raw = value; }
-    void setU64_mem(uint64_t value, size_t index){raw[index] = value; }
+    IData *raw;                                                                             // 指向Verilator IData的指针
+
+    IDataSignalAccess(IData *raw) : raw(raw){}                                              // 指针构造函数
+    IDataSignalAccess(IData &raw) : raw(addressof(raw)){}                                   // 引用构造函数
+
+    uint64_t getU64() {return *raw;}                                                        // 读取32位值并扩展为64位
+    uint64_t getU64_mem(size_t index) {return raw[index];}                                  // 读取数组元素
+    void setU64(uint64_t value) {*raw = value;}                                             // 写入值（自动截断到32位）
+    void setU64_mem(uint64_t value, size_t index){raw[index] = value;}                      // 写入数组元素
 };
 
-
-class  QDataSignalAccess : public ISignalAccess{
+/**
+ * QData信号访问类（33-64位信号）
+ *
+ * 适用范围：处理33到64位的信号
+ * 底层类型：QData (uint64_t)
+ */
+class QDataSignalAccess : public ISignalAccess{
 public:
-    QData *raw;
-    QDataSignalAccess(QData *raw) : raw(raw){}
-    QDataSignalAccess(QData &raw) : raw(addressof(raw)){}
-    uint64_t getU64() {return *raw;}
-    uint64_t getU64_mem(size_t index) {return raw[index];}
-    void setU64(uint64_t value)  {*raw = value; }
-    void setU64_mem(uint64_t value, size_t index){raw[index] = value; }
+    QData *raw;                                                                             // 指向Verilator QData的指针
+
+    QDataSignalAccess(QData *raw) : raw(raw){}                                              // 指针构造函数
+    QDataSignalAccess(QData &raw) : raw(addressof(raw)){}                                   // 引用构造函数
+
+    uint64_t getU64() {return *raw;}                                                        // 直接返回64位值
+    uint64_t getU64_mem(size_t index) {return raw[index];}                                  // 读取数组元素
+    void setU64(uint64_t value) {*raw = value;}                                             // 直接写入64位值
+    void setU64_mem(uint64_t value, size_t index){raw[index] = value;}                      // 写入数组元素
 };
 
-class  WDataSignalAccess : public ISignalAccess{
+/**
+ * WData信号访问类（超过64位的信号）
+ *
+ * 适用范围：处理超过64位的大信号
+ * 底层类型：WData (uint32_t数组)
+ *
+ * 存储格式：
+ * - 使用uint32_t数组存储，每个元素存储32位
+ * - 低位在前（小端序）
+ * - 数组长度 = (位宽 + 31) / 32
+ *
+ * 符号处理：
+ * - 支持有符号和无符号数
+ * - 有符号数使用符号扩展填充高位
+ */
+class WDataSignalAccess : public ISignalAccess{
 public:
-    WData *raw;
-    uint32_t width;
-    uint32_t wordsCount;
-    bool sint;
+    WData *raw;                                                                             // 指向Verilator WData数组的指针
+    uint32_t width;                                                                         // 信号的实际位宽
+    uint32_t wordsCount;                                                                    // 数组中uint32_t元素的数量
+    bool sint;                                                                              // 是否为有符号数
 
-    WDataSignalAccess(WData *raw, uint32_t width, bool sint) : 
+    /**
+     * 构造函数
+     * @param raw 指向WData数组的指针
+     * @param width 信号的位宽
+     * @param sint 是否为有符号数
+     */
+    WDataSignalAccess(WData *raw, uint32_t width, bool sint) :
       raw(raw), width(width), wordsCount((width+31)/32), sint(sint) {}
 
+    /**
+     * 读取内存信号的64位值
+     * 从WData数组的指定索引位置读取前64位数据
+     * @param index 内存数组索引
+     * @return 64位值（由低32位和高32位组合而成）
+     */
     uint64_t getU64_mem(size_t index) {
-      WData *mem_el = &(raw[index*wordsCount]);
-      return mem_el[0] + (((uint64_t)mem_el[1]) << 32);
+      WData *mem_el = &(raw[index*wordsCount]);                                            // 定位到指定内存元素
+      return mem_el[0] + (((uint64_t)mem_el[1]) << 32);                                    // 组合低32位和高32位
     }
 
+    /**
+     * 读取信号的64位值（非内存信号）
+     * @return 64位值
+     */
     uint64_t getU64() { return getU64_mem(0); }
 
+    /**
+     * 设置内存信号的64位值
+     * 将64位值写入WData数组，并正确处理符号扩展和位宽截断
+     * @param value 要写入的64位值
+     * @param index 内存数组索引
+     */
     void setU64_mem(uint64_t value, size_t index)  {
-      WData *mem_el = &(raw[index*wordsCount]);
-      mem_el[0] = value;
-      mem_el[1] = value >> 32;
-      uint32_t padding = ((value & 0x8000000000000000l) && sint) ? 0xFFFFFFFF : 0;
-      for(uint32_t idx = 2;idx < wordsCount;idx++){
-        mem_el[idx] = padding;
+      WData *mem_el = &(raw[index*wordsCount]);                                            // 定位到指定内存元素
+
+      // 写入低64位数据
+      mem_el[0] = value;                                                                    // 低32位
+      mem_el[1] = value >> 32;                                                              // 高32位
+
+      // 处理超过64位的部分：符号扩展或零扩展
+      uint32_t padding = ((value & 0x8000000000000000l) && sint) ? 0xFFFFFFFF : 0;         // 有符号数符号扩展，无符号数零扩展
+      for(uint32_t idx = 2; idx < wordsCount; idx++){
+        mem_el[idx] = padding;                                                              // 填充高位
       }
 
-      if(width%32 != 0) mem_el[wordsCount-1] &= (1l << width%32)-1;
+      // 处理非32位对齐的位宽：清除超出位宽的位
+      if(width%32 != 0) mem_el[wordsCount-1] &= (1l << width%32)-1;                        // 位宽截断
     }
 
+    /**
+     * 设置信号的64位值（非内存信号）
+     * @param value 要写入的64位值
+     */
     void setU64(uint64_t value)  {
       setU64_mem(value, 0);
     }
-    
+
+    /**
+     * 读取内存信号到Java字节数组
+     * 将WData数组转换为Java可读的字节数组格式
+     * @param env JNI环境指针
+     * @param value Java字节数组，用于接收数据
+     * @param index 内存数组索引
+     */
     void getAU8_mem(JNIEnv *env, jbyteArray value, size_t index) {
-      WData *mem_el = &(raw[index*wordsCount]);
-      uint32_t byteCount = wordsCount*4;
-      uint32_t shift = 32-(width % 32);
-      uint32_t backup = mem_el[wordsCount-1];
-      uint8_t values[byteCount + !sint];
+      WData *mem_el = &(raw[index*wordsCount]);                                            // 定位到指定内存元素
+      uint32_t byteCount = wordsCount*4;                                                    // 计算字节数（每个WData元素4字节）
+      uint32_t shift = 32-(width % 32);                                                     // 计算符号扩展需要的位移量
+      uint32_t backup = mem_el[wordsCount-1];                                              // 备份最高位元素
+      uint8_t values[byteCount + !sint];                                                    // 创建字节数组（无符号数需要额外一个字节）
+
+      // 处理有符号数的符号扩展
       if(sint && shift != 32) mem_el[wordsCount-1] = (((int32_t)backup) << shift) >> shift;
-      for(uint32_t idx = 0;idx < byteCount;idx++){
-        values[idx + !sint] = ((uint8_t*)mem_el)[byteCount-idx-1];
+
+      // 将WData转换为字节数组（大端序）
+      for(uint32_t idx = 0; idx < byteCount; idx++){
+        values[idx + !sint] = ((uint8_t*)mem_el)[byteCount-idx-1];                         // 字节序转换
       }
-      (env)->SetByteArrayRegion ( value, 0, byteCount + !sint, reinterpret_cast<jbyte*>(values));
-      mem_el[wordsCount-1] = backup;
+
+      // 将数据传递给Java字节数组
+      (env)->SetByteArrayRegion(value, 0, byteCount + !sint, reinterpret_cast<jbyte*>(values));
+      mem_el[wordsCount-1] = backup;                                                        // 恢复原始值
     }
-  
+
+    /**
+     * 读取信号到Java字节数组（非内存信号）
+     * @param env JNI环境指针
+     * @param value Java字节数组，用于接收数据
+     */
     void getAU8(JNIEnv *env, jbyteArray value) {
       getAU8_mem(env, value, 0);
     }
 
+    /**
+     * 从Java字节数组设置内存信号
+     * 将Java字节数组转换为WData数组格式
+     * @param env JNI环境指针
+     * @param jvalue Java字节数组，包含要写入的数据
+     * @param length 字节数组长度
+     * @param index 内存数组索引
+     */
     void setAU8_mem(JNIEnv *env, jbyteArray jvalue, int length, size_t index) {
-      WData *mem_el = &(raw[index*wordsCount]);
-      jbyte value[length];
-      (env)->GetByteArrayRegion( jvalue, 0, length, value);
-      uint32_t padding = (value[0] & 0x80 && sint) != 0 ? 0xFFFFFFFF : 0;
-      for(uint32_t idx = 0;idx < wordsCount;idx++){
-        mem_el[idx] = padding;
+      WData *mem_el = &(raw[index*wordsCount]);                                            // 定位到指定内存元素
+      jbyte value[length];                                                                  // 创建临时字节数组
+      (env)->GetByteArrayRegion(jvalue, 0, length, value);                                 // 从Java获取字节数据
+
+      // 确定填充值（符号扩展或零扩展）
+      uint32_t padding = (value[0] & 0x80 && sint) != 0 ? 0xFFFFFFFF : 0;                 // 检查符号位
+
+      // 初始化WData数组
+      for(uint32_t idx = 0; idx < wordsCount; idx++){
+        mem_el[idx] = padding;                                                              // 用填充值初始化
       }
-      uint32_t capedLength = length > 4*wordsCount ? 4*wordsCount : length;
-      for(uint32_t idx = 0;idx < capedLength;idx++){
-        ((uint8_t*)mem_el)[idx] = value[length-idx-1];
+
+      // 复制字节数据（处理长度限制）
+      uint32_t capedLength = length > 4*wordsCount ? 4*wordsCount : length;                // 限制长度不超过数组容量
+      for(uint32_t idx = 0; idx < capedLength; idx++){
+        ((uint8_t*)mem_el)[idx] = value[length-idx-1];                                     // 字节序转换
       }
-      if(width%32 != 0) mem_el[wordsCount-1] &= (1l << width%32)-1;
+
+      // 位宽截断
+      if(width%32 != 0) mem_el[wordsCount-1] &= (1l << width%32)-1;                        // 清除超出位宽的位
     }
 
+    /**
+     * 从Java字节数组设置信号（非内存信号）
+     * @param env JNI环境指针
+     * @param jvalue Java字节数组，包含要写入的数据
+     * @param length 字节数组长度
+     */
     void setAU8(JNIEnv *env, jbyteArray jvalue, int length) {
       setAU8_mem(env, jvalue, length, 0);
     }
 };
 
+// ============================================================================
+// 仿真包装器类定义
+// ============================================================================
+
+// 前向声明
 class Wrapper_${uniqueId};
+
+// 线程局部存储的仿真句柄，用于Verilator回调函数访问当前仿真实例
 thread_local Wrapper_${uniqueId} *simHandle${uniqueId} = NULL;
 
 #include <chrono>
 using namespace std::chrono;
 
+/**
+ * Verilator仿真包装器类
+ *
+ * 功能说明：
+ * 这个类封装了一个完整的Verilator仿真实例，管理仿真的整个生命周期。
+ * 它提供了仿真控制、信号访问、时间管理和波形记录等功能。
+ *
+ * 主要职责：
+ * 1. 仿真实例管理 - 创建、初始化和销毁Verilator模型
+ * 2. 信号访问管理 - 为所有公开信号创建访问器
+ * 3. 时间管理 - 跟踪仿真时间和时间精度
+ * 4. 波形记录 - 管理VCD/FST波形文件的生成
+ * 5. 性能优化 - 批量波形刷新和时间检查
+ *
+ * 设计特点：
+ * - 每个实例对应一个独立的仿真环境
+ * - 支持多个并发仿真实例
+ * - 自动管理资源生命周期
+ * - 提供高性能的信号访问接口
+ */
 class Wrapper_${uniqueId}{
 public:
-    uint64_t time;
-    high_resolution_clock::time_point lastFlushAt;
-    uint32_t timeCheck;
-    bool waveEnabled;
-    bool gotFinish;
-    VerilatedContext* contextp;  // 恢复上下文支持
-    V${config.toplevelName} *top;
-    ISignalAccess *signalAccess[${config.signals.length}];
-    #ifdef TRACE
-	  Verilated${format.ext.capitalize}C tfp;
-	  #endif
-    string name;
-    int32_t time_precision;
+    // 仿真状态管理
+    uint64_t time;                                                                          // 当前仿真时间（以周期为单位）
+    high_resolution_clock::time_point lastFlushAt;                                         // 上次波形刷新的时间点
+    uint32_t timeCheck;                                                                     // 时间检查计数器（用于性能优化）
+    bool waveEnabled;                                                                       // 波形记录是否启用
+    bool gotFinish;                                                                         // 是否收到仿真结束信号（$$finish）
 
+    // Verilator核心组件
+    VerilatedContext* contextp;                                                             // Verilator上下文（v4.034+支持）
+    V${config.toplevelName} *top;                                                           // 顶层模块实例
+
+    // 信号访问系统
+    ISignalAccess *signalAccess[${config.signals.length}];                                 // 信号访问器数组（${config.signals.length}个信号）
+
+    // 波形记录系统
+    #ifdef TRACE
+    Verilated${format.ext.capitalize}C tfp;                                                // 波形记录对象（${format.ext.toUpperCase()}格式）
+    #endif
+
+    // 仿真元数据
+    string name;                                                                            // 仿真实例名称
+    int32_t time_precision;                                                                 // 时间精度（10^x格式）
+
+    /**
+     * 构造函数 - 初始化Verilator仿真实例
+     *
+     * 初始化流程：
+     * 1. 创建Verilator上下文并设置随机种子
+     * 2. 设置全局仿真句柄（用于回调函数）
+     * 3. 创建顶层模块实例
+     * 4. 初始化信号访问器
+     * 5. 配置波形记录
+     * 6. 设置时间精度
+     *
+     * @param name 仿真实例名称，用于标识和日志
+     * @param wavePath 波形文件输出路径
+     * @param seed 随机种子，确保仿真的可重现性
+     */
     Wrapper_${uniqueId}(const char * name, const char * wavePath, int seed){
-      contextp = new VerilatedContext;
-      contextp->randReset(2);
-      contextp->randSeed(seed);
-      
+      // 第1步：初始化Verilator上下文
+      contextp = new VerilatedContext;                                                      // 创建Verilator上下文对象
+      contextp->randReset(2);                                                               // 设置随机重置模式
+      contextp->randSeed(seed);                                                             // 设置随机种子
+
+      // 第2步：设置全局句柄（重要：必须在创建顶层模块之前）
       // Verilator v5.026+ calls time() inside Vtop::Vtop()
       // initialize the simHandle before we call Vtop
-      simHandle${uniqueId} = this;
-      time = 0;
-      gotFinish = false;
-      top = new V${config.toplevelName}();
-      
-      timeCheck = 0;
-      lastFlushAt = high_resolution_clock::now();
-      waveEnabled = true;
+      simHandle${uniqueId} = this;                                                          // 设置线程局部仿真句柄
+
+      // 第3步：初始化仿真状态
+      time = 0;                                                                             // 仿真时间从0开始
+      gotFinish = false;                                                                    // 未收到结束信号
+
+      // 第4步：创建顶层模块实例
+      top = new V${config.toplevelName}();                                                  // 创建Verilator生成的顶层模块
+
+      // 第5步：初始化性能监控
+      timeCheck = 0;                                                                        // 重置时间检查计数器
+      lastFlushAt = high_resolution_clock::now();                                          // 记录初始化时间
+      waveEnabled = true;                                                                   // 默认启用波形记录
+
+      // 第6步：初始化信号访问器数组
+      // 为每个公开信号创建对应的访问器，根据信号位宽选择合适的访问器类型
 ${    val signalInits = for((signal, id) <- config.signals.zipWithIndex) yield {
       val typePrefix = if(signal.dataType.width <= 8) "CData"
       else if(signal.dataType.width <= 16) "SData"
@@ -295,32 +602,53 @@ ${    val signalInits = for((signal, id) <- config.signals.zipWithIndex) yield {
 
       signalInits.mkString("")
     }
+
+      // 第7步：配置波形记录系统
       #ifdef TRACE
-      Verilated::traceEverOn(true);
-      top->trace(&tfp, 99);
-      tfp.set_time_resolution(${if (useTimePrecision) "Verilated::threadContextp()->timeprecisionString()" else "VL_TIME_PRECISION_STR" });
-      tfp.open((std::string(wavePath) + "wave" + ".${format.ext}").c_str());
+      Verilated::traceEverOn(true);                                                        // 全局启用波形记录
+      top->trace(&tfp, 99);                                                                // 连接顶层模块到波形记录器（深度99层）
+      tfp.set_time_resolution(${if (useTimePrecision) "Verilated::threadContextp()->timeprecisionString()" else "VL_TIME_PRECISION_STR" }); // 设置时间分辨率
+      tfp.open((std::string(wavePath) + "wave" + ".${format.ext}").c_str());              // 打开波形文件：<wavePath>wave.${format.ext}
       #endif
-      this->name = name;
-      this->time_precision = ${if (useTimePrecision) "Verilated::timeprecision()" else "VL_TIME_PRECISION" };
+
+      // 第8步：设置仿真元数据
+      this->name = name;                                                                    // 保存仿真实例名称
+      this->time_precision = ${if (useTimePrecision) "Verilated::timeprecision()" else "VL_TIME_PRECISION" }; // 获取时间精度
     }
 
+    /**
+     * 析构函数 - 清理仿真资源
+     *
+     * 清理流程：
+     * 1. 释放所有信号访问器
+     * 2. 完成波形记录并关闭文件
+     * 3. 生成代码覆盖率报告（如果启用）
+     * 4. 调用Verilator清理函数
+     * 5. 释放顶层模块实例
+     *
+     * 注意：析构函数确保所有资源都被正确释放，避免内存泄漏
+     */
     virtual ~Wrapper_${uniqueId}(){
-      for(int idx = 0;idx < ${config.signals.length};idx++){
-          delete signalAccess[idx];
+      // 第1步：释放信号访问器
+      for(int idx = 0; idx < ${config.signals.length}; idx++){
+          delete signalAccess[idx];                                                         // 释放每个信号访问器
       }
 
+      // 第2步：完成波形记录
       #ifdef TRACE
-      if(waveEnabled) tfp.dump((vluint64_t)time);
-      tfp.flush();
-      tfp.close();
-      #endif
-      #ifdef COVERAGE
-      VerilatedCov::write((("${new File(config.vcdPath).getAbsolutePath.replace("\\","\\\\")}/${if(config.vcdPrefix != null) config.vcdPrefix + "_" else ""}") + name + ".dat").c_str());
+      if(waveEnabled) tfp.dump((vluint64_t)time);                                          // 记录最后一个时间点的波形
+      tfp.flush();                                                                          // 刷新波形缓冲区
+      tfp.close();                                                                          // 关闭波形文件
       #endif
 
-      // Verilated::runFlushCallbacks();
-      // Verilated::runExitCallbacks();
+      // 第3步：生成代码覆盖率报告
+      #ifdef COVERAGE
+      VerilatedCov::write((("${new File(config.vcdPath).getAbsolutePath.replace("\\","\\\\")}/${if(config.vcdPrefix != null) config.vcdPrefix + "_" else ""}") + name + ".dat").c_str()); // 写入覆盖率数据文件
+      #endif
+
+      // 第4步：Verilator清理（注释掉的部分为可选的全局清理）
+      // Verilated::runFlushCallbacks();                                                   // 运行刷新回调（可选）
+      // Verilated::runExitCallbacks();                                                    // 运行退出回调（可选）
 
       // 第5步：释放Verilator模块
       //contextp->threadContextp()->gotFinish(true);                                       // 设置完成标志（可选）
@@ -331,49 +659,120 @@ ${    val signalInits = for((signal, id) <- config.signals.zipWithIndex) yield {
 
 };
 
+// ============================================================================
+// Verilator回调函数
+// ============================================================================
+
+/**
+ * SystemC时间戳函数
+ *
+ * 功能：为Verilator提供当前仿真时间
+ * 调用时机：Verilator在需要时间信息时自动调用
+ * 返回值：当前仿真时间（双精度浮点数）
+ *
+ * 注意：这个函数必须是全局函数，因为Verilator会直接调用它
+ */
 double sc_time_stamp () {
-  if(simHandle${uniqueId} == NULL) return 0.0;
-  return simHandle${uniqueId}->time;
+  if(simHandle${uniqueId} == NULL) return 0.0;                                             // 如果没有活动的仿真实例，返回0
+  return simHandle${uniqueId}->time;                                                       // 返回当前仿真时间
 }
 
-
+/**
+ * Verilog $$finish系统任务处理函数
+ *
+ * 功能：处理Verilog代码中的$$finish系统任务调用
+ * 调用时机：当Verilog代码执行$$finish时被Verilator调用
+ *
+ * 处理流程：
+ * 1. 打印finish信息（包含文件名和行号）
+ * 2. 设置gotFinish标志，通知仿真管理器
+ * 3. 不直接退出程序，而是让Java层处理
+ *
+ * @param filename 调用$$finish的Verilog文件名
+ * @param linenum 调用$$finish的行号
+ * @param hier 层次路径（未使用）
+ *
+ * 注意：VL_MT_UNSAFE表示这个函数不是线程安全的
+ */
 void vl_finish(const char* filename, int linenum, const char* hier) VL_MT_UNSAFE {
-    if (false && hier) {}
-    VL_PRINTF(  // Not VL_PRINTF_MT, already on main thread
-        "- %s:%d: Verilog $$finish\\n", filename, linenum);
-   /*if (Verilated::threadContextp()->gotFinish()) {
-        VL_PRINTF(  // Not VL_PRINTF_MT, already on main thread
-            "- %s:%d: Second verilog $$finish, exiting\\n", filename, linenum);
-        Verilated::runFlushCallbacks();
-        Verilated::runExitCallbacks();
-        std::exit(0);
-    }*/
-    simHandle${uniqueId}->gotFinish = true;
+    if (false && hier) {}                                                                   // 抑制未使用参数警告
+    VL_PRINTF(                                                                              // 使用Verilator的打印宏（非多线程版本）
+        "- %s:%d: Verilog $$finish\\n", filename, linenum);                                // 打印finish信息
+
+   /*
+    * 注释掉的代码：原始的Verilator行为是直接退出程序
+    * SpinalHDL选择不直接退出，而是设置标志让Java层处理
+    *
+    * if (Verilated::threadContextp()->gotFinish()) {
+    *     VL_PRINTF("- %s:%d: Second verilog $$finish, exiting\\n", filename, linenum);
+    *     Verilated::runFlushCallbacks();
+    *     Verilated::runExitCallbacks();
+    *     std::exit(0);
+    * }
+    */
+    simHandle${uniqueId}->gotFinish = true;                                                 // 设置完成标志，让Java层检测并处理
 }
+
+// ============================================================================
+// JNI接口函数定义
+// ============================================================================
 
 #ifdef __cplusplus
-extern "C" {
+extern "C" {                                                                               // C++中使用C链接，避免名称修饰
 #endif
 #include <stdio.h>
 #include <stdint.h>
 
-#define API __attribute__((visibility("default")))
+#define API __attribute__((visibility("default")))                                         // 设置函数为导出可见
 
-
+/**
+ * JNI函数：创建新的仿真句柄
+ *
+ * Java方法签名：
+ * public native long newHandle_${uniqueId}(String name, String wavePath, int seed);
+ *
+ * 功能说明：
+ * 这是仿真生命周期的起点，负责创建和初始化一个新的Verilator仿真实例。
+ * 它处理Java到C++的参数转换，设置随机种子，并返回仿真句柄供后续使用。
+ *
+ * 执行流程：
+ * 1. 重置全局仿真句柄
+ * 2. 根据平台设置随机种子
+ * 3. 转换Java字符串参数
+ * 4. 创建Wrapper实例
+ * 5. 清理JNI资源
+ * 6. 返回句柄指针
+ *
+ * @param env JNI环境指针
+ * @param obj Java对象引用（未使用）
+ * @param name 仿真实例名称（Java字符串）
+ * @param wavePath 波形文件路径（Java字符串）
+ * @param seedValue 随机种子值
+ * @return 仿真句柄指针（作为long返回给Java）
+ */
 JNIEXPORT Wrapper_${uniqueId} * API JNICALL ${jniPrefix}newHandle_1${uniqueId}
   (JNIEnv * env, jobject obj, jstring name, jstring wavePath, jint seedValue){
-    simHandle${uniqueId} = NULL;
+    simHandle${uniqueId} = NULL;                                                            // 重置全局仿真句柄
+
+    // 平台特定的随机种子设置
     #if defined(_WIN32) && !defined(__CYGWIN__)
-    srand(seedValue);
+    srand(seedValue);                                                                       // Windows平台使用srand
     #else
-    srand48(seedValue);
+    srand48(seedValue);                                                                     // Unix/Linux平台使用srand48
     #endif
-    const char* ch = env->GetStringUTFChars(name, 0);
-    const char* wavePathCh = env->GetStringUTFChars(wavePath, 0);
-    Wrapper_${uniqueId} *handle = new Wrapper_${uniqueId}(ch, wavePathCh, seedValue);
-    env->ReleaseStringUTFChars(name, ch);
-    env->ReleaseStringUTFChars(wavePath, wavePathCh);
-    return handle;
+
+    // Java字符串到C字符串的转换
+    const char* ch = env->GetStringUTFChars(name, 0);                                      // 获取仿真名称的UTF-8字符串
+    const char* wavePathCh = env->GetStringUTFChars(wavePath, 0);                          // 获取波形路径的UTF-8字符串
+
+    // 创建Verilator包装器实例
+    Wrapper_${uniqueId} *handle = new Wrapper_${uniqueId}(ch, wavePathCh, seedValue);      // 调用构造函数创建实例
+
+    // 清理JNI资源
+    env->ReleaseStringUTFChars(name, ch);                                                  // 释放名称字符串
+    env->ReleaseStringUTFChars(wavePath, wavePathCh);                                      // 释放路径字符串
+
+    return handle;                                                                          // 返回仿真句柄指针给Java层
 }
 
 JNIEXPORT jboolean API JNICALL ${jniPrefix}eval_1${uniqueId}
@@ -493,37 +892,65 @@ JNIEXPORT void API JNICALL ${jniPrefix}disableWave_1${uniqueId}
   }
 
 //     VL_THREADED
+  /**
+   * 编译Verilator模型
+   *
+   * 这是VerilatorBackend的核心方法，负责：
+   * 1. 配置编译环境（JDK路径、编译标志等）
+   * 2. 生成Verilator编译脚本
+   * 3. 管理编译缓存（基于内容哈希）
+   * 4. 调用Verilator编译RTL代码为C++模型
+   * 5. 编译C++模型为动态链接库
+   * 6. 处理编译过程中的错误和日志
+   *
+   * 缓存机制：
+   * - 基于RTL文件内容、Verilator版本和编译参数计算SHA-1哈希
+   * - 如果缓存存在且有效，直接复用编译结果
+   * - 自动管理缓存条目数量，删除最旧的缓存
+   */
   def compileVerilator(): Unit = {
+    // 1. 配置JDK环境和JNI头文件路径
     val java_home = System.getProperty("java.home")
     assert(java_home != "" && java_home != null, "JAVA_HOME need to be set")
     val jdk = java_home.replace("/jre","").replace("\\jre","")
     val jdkIncludes = if(isWindows){
+      // Windows下需要复制JNI头文件到工作目录
       new File(s"${workspacePath}\\${workspaceName}").mkdirs()
       FileUtils.copyDirectory(new File(s"$jdk\\include"), new File(s"${workspacePath}\\${workspaceName}\\jniIncludes"))
       s"jniIncludes"
     }else{
+      // Unix系统直接使用JDK的include目录
       jdk + "/include"
     }
 
+    // 2. 配置平台特定的编译标志
     val arch = System.getProperty("os.arch")
-    val flags   = if(isMac) List("-dynamiclib") else (if(arch == "arm" || arch == "aarch64" || arch == "loongarch64") List("-fPIC", "-shared", "-Wno-attributes") else List("-fPIC", "-m64", "-shared", "-Wno-attributes"))
+    val flags = if(isMac)
+      List("-dynamiclib")                                   // macOS使用动态库标志
+    else (if(arch == "arm" || arch == "aarch64" || arch == "loongarch64")
+      List("-fPIC", "-shared", "-Wno-attributes")           // ARM架构标志
+    else
+      List("-fPIC", "-m64", "-shared", "-Wno-attributes"))  // x86_64标志
 
+    // 3. 配置波形记录参数
     val waveArgs = format match {
-      case WaveFormat.FST =>  "-CFLAGS -DTRACE --trace-fst"
-      case WaveFormat.VCD =>  "-CFLAGS -DTRACE --trace"
-      case WaveFormat.NONE => ""
-      // Other formats are not supported by Verilator
+      case WaveFormat.FST =>  "-CFLAGS -DTRACE --trace-fst" // FST格式波形
+      case WaveFormat.VCD =>  "-CFLAGS -DTRACE --trace"     // VCD格式波形
+      case WaveFormat.NONE => ""                            // 不记录波形
+      // 其他格式Verilator不支持
       case _ => ???
     }
 
+    // 4. 配置代码覆盖率参数
     val covArgs = config.withCoverage match {
-      case true =>  "-CFLAGS -DCOVERAGE --coverage"
-      case false => ""
+      case true =>  "-CFLAGS -DCOVERAGE --coverage"         // 启用覆盖率
+      case false => ""                                      // 禁用覆盖率
     }
 
+    // 5. 配置时间精度参数
     val timeScaleArgs = config.timePrecision match {
-      case null => ""
-      case _ => s"--timescale-override /${config.timePrecision.replace(" ", "")}"
+      case null => ""                                       // 使用默认时间精度
+      case _ => s"--timescale-override /${config.timePrecision.replace(" ", "")}" // 自定义时间精度
     }
 
     val rtlIncludeDirsArgs = config.rtlIncludeDirs.map(e => s"-I${new File(e).getAbsolutePath}")
@@ -717,12 +1144,20 @@ JNIEXPORT void API JNICALL ${jniPrefix}disableWave_1${uniqueId}
     }
   }
 
+  /**
+   * 编译Java JNI包装器类
+   * 生成动态Java类，实现IVerilatorNative接口
+   * 提供Java到C++的JNI桥接功能
+   */
   def compileJava(): Unit = {
     val verilatorNativeImplCode =
       s"""package wrapper_${workspaceName};
          |import spinal.sim.IVerilatorNative;
          |
+         |// 动态生成的Verilator本地实现类
+         |// 实现IVerilatorNative接口，提供JNI方法调用
          |public class VerilatorNative implements IVerilatorNative {
+         |    // 接口方法实现，调用对应的本地方法
          |    public long newHandle(String name, String wavePath, int seed) { return newHandle_${uniqueId}(name, wavePath, seed);}
          |    public boolean eval(long handle) { return eval_${uniqueId}(handle);}
          |    public int get_time_precision(long handle) { return getTimePrecision_${uniqueId}(handle);}
@@ -739,7 +1174,7 @@ JNIEXPORT void API JNICALL ${jniPrefix}disableWave_1${uniqueId}
          |    public void enableWave(long handle) { enableWave_${uniqueId}(handle);}
          |    public void disableWave(long handle) { disableWave_${uniqueId}(handle);}
          |
-         |
+         |    // 本地方法声明，对应C++中的JNI函数
          |    public native long newHandle_${uniqueId}(String name, String wavePath, int seed);
          |    public native boolean eval_${uniqueId}(long handle);
          |    public native int getTimePrecision_${uniqueId}(long handle);
@@ -756,17 +1191,23 @@ JNIEXPORT void API JNICALL ${jniPrefix}disableWave_1${uniqueId}
          |    public native void enableWave_${uniqueId}(long handle);
          |    public native void disableWave_${uniqueId}(long handle);
          |
+         |    // 静态块：加载编译好的动态链接库
          |    static{
          |      System.load("${new File(s"${workspacePath}/${workspaceName}").getAbsolutePath.replace("\\","\\\\")}/${workspaceName}_$uniqueId.${if(isWindows) "dll" else (if(isMac) "dylib" else "so")}");
          |    }
          |}
        """.stripMargin
 
+    // 动态编译Java代码
     val verilatorNativeImplFile = new DynamicCompiler.InMemoryJavaFileObject(s"wrapper_${workspaceName}.VerilatorNative", verilatorNativeImplCode)
     import collection.JavaConverters._
     DynamicCompiler.compile(List[JavaFileObject](verilatorNativeImplFile).asJava, s"${workspacePath}/${workspaceName}")
   }
 
+  /**
+   * 检查运行环境
+   * 确保在SBT环境下正确配置了fork选项
+   */
   def checks(): Unit ={
     if(System.getProperty("java.class.path").contains("sbt-launch.jar")){
       System.err.println("""[Error] It look like you are running the simulation with SBT without having the SBT 'fork := true' configuration.\n  Add it in the build.sbt file to fix this issue, see https://github.com/SpinalHDL/SpinalTemplateSbt/blob/master/build.sbt""")
@@ -774,15 +1215,24 @@ JNIEXPORT void API JNICALL ${jniPrefix}disableWave_1${uniqueId}
     }
   }
 
-  clean()
-  checks()
-  compileVerilator()
-  compileJava()
+  // 执行编译流程
+  clean()                    // 清理工作空间
+  checks()                   // 检查运行环境
+  compileVerilator()         // 编译Verilator模型
+  compileJava()              // 编译Java JNI包装器
 
+  // 动态加载编译好的Java类
   val nativeImpl = DynamicCompiler.getClass(s"wrapper_${workspaceName}.VerilatorNative", s"${workspacePath}/${workspaceName}")
   val nativeInstance: IVerilatorNative = nativeImpl.getConstructor().newInstance().asInstanceOf[IVerilatorNative]
 
-  def instanciate(name: String, seed: Int) = nativeInstance.synchronized{ //synchronized is used as a Verilator isn't thread safe on construction (bug ?)
+  /**
+   * 实例化仿真器
+   * 创建新的仿真实例，配置波形路径和随机种子
+   * @param name 测试名称
+   * @param seed 随机种子
+   * @return 仿真句柄
+   */
+  def instanciate(name: String, seed: Int) = nativeInstance.synchronized{ // 同步是因为Verilator在构造时不是线程安全的
     val patchedPath = new File(config.vcdPath.replace("$TEST", name)).getAbsolutePath.replace("\\", "/")
     val patchedPrefix = if(config.vcdPrefix == null) "" else config.vcdPrefix.replace("$TEST", name) + "_"
     val wavePath = patchedPath + "/" + patchedPrefix
@@ -790,6 +1240,7 @@ JNIEXPORT void API JNICALL ${jniPrefix}disableWave_1${uniqueId}
     nativeInstance.newHandle(name, wavePath, seed)
   }
 
+  // Verilator不使用缓冲写入
   override def isBufferedWrite: Boolean = false
 }
 
