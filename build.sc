@@ -137,3 +137,16 @@ trait Tester extends SpinalModule with SpinalPublishModule {
   def ivyDeps = super.ivyDeps() ++ Agg(ivy"org.scalatest::scalatest:${scalatestVersion}")
   def publishVersion = Version.SpinalVersion.tester
 }
+
+// My Test Module for Mill
+object my_test extends Cross[MyTest](Version.SpinalVersion.compilers){
+  def defaultCrossSegments = Seq(Version.SpinalVersion.compilers.head)
+}
+trait MyTest extends SpinalModule with SpinalPublishModule {
+  override def millSourcePath = os.pwd / "my_test"
+  def mainClass = Some("spinal.my_test")
+  def moduleDeps = Seq(coreMod(), simMod(), libMod())
+  def scalacOptions = super.scalacOptions() ++ idslpluginMod().pluginOptions()
+  def ivyDeps = super.ivyDeps() ++ Agg(ivy"org.scalatest::scalatest:${scalatestVersion}")
+  def publishVersion = Version.SpinalVersion.tester
+}

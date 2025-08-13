@@ -81,7 +81,7 @@ lazy val all = (project in file("."))
     publishLocal := {},
     ScalaUnidoc / unidoc / unidocProjectFilter := inProjects(lib, core)
   )
-  .aggregate(sim, idslpayload, idslplugin, core, lib, tester)
+  .aggregate(sim, idslpayload, idslplugin, core, lib, tester, my_test)
 
 
 import sys.process._
@@ -186,5 +186,20 @@ assembly / test := {}
 Test / testOptions += Tests.Argument("-l", "spinal.tester.formal")
 addCommandAlias("testFormal", "testOnly * -- -n spinal.tester.formal")
 addCommandAlias("testWithoutFormal", "testOnly * -- -l spinal.tester.formal")
+
+// My Test Module
+lazy val my_test = (project in file("my_test"))
+  .settings(
+    defaultSettingsWithPlugin,
+    name := "SpinalHDL-my-test",
+    version := SpinalVersion.tester,
+    Test / baseDirectory := file("./"),
+    libraryDependencies += "org.scalatest" %% "scalatest" % scalatestVersion,
+    // 添加对 SpinalHDL 核心模块的依赖
+    libraryDependencies += "com.github.spinalhdl" %% "spinalhdl-core" % SpinalVersion.core,
+    libraryDependencies += "com.github.spinalhdl" %% "spinalhdl-sim" % SpinalVersion.sim,
+    libraryDependencies += "com.github.spinalhdl" %% "spinalhdl-lib" % SpinalVersion.lib,
+  )
+  .dependsOn(sim, core, lib)
 
 assembly / assemblyOutputPath := file("./release/spinalhdl.jar")
