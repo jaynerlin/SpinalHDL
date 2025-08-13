@@ -1,13 +1,11 @@
 name: Build and Push Docker Image
 
 on:
-  push:
-    tags:
-      - '*'
+  pull_request:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  IMAGE_NAME: jaynerlin/docker:verilator-v5.022
 
 jobs:
   build-and-push:
