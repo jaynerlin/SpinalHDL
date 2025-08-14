@@ -32,8 +32,8 @@ on:
           - 'verilator-v5.018'                               # 新版本v5.018
           - 'verilator-v5.020'                               # 新版本v5.020
           - 'verilator-v5.022'                               # 新版本v5.022
-          - 'verilator-v5.024_without5016'                   # v5.024但禁用特定功能
-          - 'verilator-v5.022_with5016'                      # v5.022但启用特定功能
+          - 'verilator-v5.024'                               # 新版本v5.024
+          - 'verilator-v5.036'                               # 新版本v5.036
 
 # 定义工作流中的具体任务
 jobs:
