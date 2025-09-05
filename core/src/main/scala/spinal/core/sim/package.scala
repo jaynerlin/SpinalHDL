@@ -986,17 +986,19 @@ package object sim {
     }
 
     def waitRisingEdge(): Unit = waitRisingEdge(1)
-    def waitRisingEdge(count: Int): Unit ={
-      val manager = SimManagerContext.current.manager
-      val signal = getSignal(manager, cd.clock)
-      var last = manager.getLong(signal)
+    def waitRisingEdge(count: Int): Unit = {
+      val manager = SimManagerContext.current.manager        // 获取仿真管理器
+      val signal = getSignal(manager, cd.clock)              // 获取时钟信号句柄
+      var last = manager.getLong(signal)                     // 读取当前时钟值
       var counter = 0
-      waitUntil{
-        val current = manager.getLong(signal)
-        if(last == 0l && current == 1l)
+      
+      // 第2层：调用waitUntil等待条件满足
+      waitUntil {
+        val current = manager.getLong(signal)                // 读取当前时钟值
+        if(last == 0l && current == 1l)                     // 检测上升沿 (0→1)
           counter += 1
         last = current
-        counter == count
+        counter == count                                     // 等待指定数量的上升沿
       }
     }
 

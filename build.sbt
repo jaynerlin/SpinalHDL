@@ -195,10 +195,6 @@ lazy val my_test = (project in file("my_test"))
     version := SpinalVersion.tester,
     Test / baseDirectory := file("./"),
     libraryDependencies += "org.scalatest" %% "scalatest" % scalatestVersion,
-    // 添加对 SpinalHDL 核心模块的依赖
-    libraryDependencies += "com.github.spinalhdl" %% "spinalhdl-core" % SpinalVersion.core,
-    libraryDependencies += "com.github.spinalhdl" %% "spinalhdl-sim" % SpinalVersion.sim,
-    libraryDependencies += "com.github.spinalhdl" %% "spinalhdl-lib" % SpinalVersion.lib,
   )
   .dependsOn(sim, core, lib)
 
