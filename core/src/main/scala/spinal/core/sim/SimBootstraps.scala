@@ -51,7 +51,7 @@ package spinal.core.sim
 import java.io.{File, PrintWriter}
 import org.apache.commons.io.FileUtils
 import spinal.core.internals.{BaseNode, DeclarationStatement, GraphUtils, PhaseCheck, PhaseContext, PhaseNetlist}
-import spinal.core.{BaseType, Bits, BlackBox, Bool, Component, GlobalData, InComponent, Mem, MemSymbolesMapping, MemSymbolesTag, SInt, ScopeProperty, SpinalConfig, SpinalEnumCraft, SpinalReport, SpinalTag, SpinalTagReady, TimeNumber, UInt, Verilator, noLatchCheck}
+import spinal.core.{ASYNC, BaseType, Bits, BlackBox, Bool, Component, GlobalData, HIGH, InComponent, LOW, Mem, MemSymbolesMapping, MemSymbolesTag, RISING, SInt, ScopeProperty, SpinalConfig, SpinalEnumCraft, SpinalReport, SpinalTag, SpinalTagReady, SYNC, TimeNumber, UInt, Verilator, noLatchCheck}
 import spinal.sim._
 
 import scala.collection.mutable
@@ -103,37 +103,57 @@ case class SpinalVerilatorBackendConfig[T <: Component](
                                                          simulatorFlags    : ArrayBuffer[String] = ArrayBuffer[String](),
                                                          withCoverage      : Boolean,
                                                          timePrecision     : TimeNumber = null,
-                                                         testPath          : String
+                                                         testPath          : String,
+                                                         enableRtlAutoReset: Boolean = true
 )
 
 
-/**
- * SpinalHDL Verilator后端工厂对象
- *
- * 这是SpinalHDL和底层VerilatorBackend之间的适配器，负责：
- * 1. 将SpinalHDL特定的配置转换为VerilatorBackend可理解的格式
- * 2. 从SpinalReport中提取信号信息并建立信号映射
- * 3. 处理SpinalHDL特有的数据类型和标签
- * 4. 创建并配置底层的VerilatorBackend实例
- *
- * 设计模式：适配器模式 + 工厂模式
- * - 适配器：将SpinalHDL接口适配到Verilator接口
- * - 工厂：根据配置创建配置好的VerilatorBackend实例
- */
 object SpinalVerilatorBackend {
 
   /**
-   * 创建配置好的VerilatorBackend实例
-   *
-   * 这个方法是SpinalHDL仿真系统的关键组件，它：
-   * 1. 将高级的SpinalVerilatorBackendConfig转换为底层的VerilatorBackendConfig
-   * 2. 遍历SpinalHDL的RTL结构，提取所有标记为public的信号
-   * 3. 为每个信号分配唯一ID并建立类型映射
-   * 4. 创建并返回配置完整的VerilatorBackend实例
-   *
-   * @param config SpinalHDL特定的Verilator配置
-   * @return 配置完整的VerilatorBackend实例
+   * This method traverses the entire SpinalHDL design, analyzes the clock domain configurations of all registers
+   * and extracts accurate information about the reset and clock signals, including polarity, type, etc.
    */
+  private def analyzeResetAndClockSignals(toplevel: Component): (Map[String, (String, Boolean, Boolean)], Map[String, Boolean]) = {
+    import scala.collection.mutable
+
+    val resetSignalMap = mutable.Map[String, (String, Boolean, Boolean)]()
+    val clockSignalMap = mutable.Map[String, Boolean]()
+
+    // Traverse the entire RTL design, collect clock domain information
+    GraphUtils.walkAllComponents(toplevel, component => {
+      component.dslBody.walkStatements { statement =>
+        statement match {
+          // 识别需要复位的寄存器
+          case bt: BaseType if bt.isReg =>
+            val cd = bt.clockDomain
+
+            // Collect clock signal information
+            val clockSignal = cd.clock
+            val clockName = clockSignal.getName()
+            val isRisingEdge = cd.config.clockEdge == RISING
+            clockSignalMap(clockName) = isRisingEdge
+
+            // If the clock domain has a reset signal, record it
+            if (cd.hasResetSignal) {
+              val resetSignal = cd.reset
+              val resetName = resetSignal.getName()
+              val isAsync = cd.config.resetKind == ASYNC
+              val isActiveLow = cd.config.resetActiveLevel == LOW
+              val polarityDesc = if (isActiveLow) "LOW" else "HIGH"
+
+              // Record reset signal information: (polarity description, whether asynchronous, whether low level valid)
+              resetSignalMap(resetName) = (polarityDesc, isAsync, isActiveLow)
+            }
+
+          case _ =>
+        }
+      }
+    })
+
+    (resetSignalMap.toMap, clockSignalMap.toMap)
+  }
+
   def apply[T <: Component](config: SpinalVerilatorBackendConfig[T]) = {
 
     import config._
@@ -155,12 +175,16 @@ object SpinalVerilatorBackend {
       case WaveFormat.DEFAULT => WaveFormat.VCD            // 默认使用VCD格式
       case _ => waveFormat
     }
-    vconfig.waveDepth         = waveDepth                   // 波形深度
-    vconfig.optimisationLevel = optimisationLevel          // 优化级别
-    vconfig.simulatorFlags    = simulatorFlags             // 仿真器标志
-    vconfig.withCoverage      = withCoverage                // 覆盖率配置
+    vconfig.waveDepth         = waveDepth
+    vconfig.optimisationLevel = optimisationLevel
+    vconfig.simulatorFlags        = simulatorFlags
+    vconfig.withCoverage  = withCoverage
+    vconfig.autoInitialReset  = enableRtlAutoReset
 
-    // 3. 时间精度转换（SpinalHDL TimeNumber -> String）
+    val (resetSignalAnalysis, clockSignalAnalysis) = analyzeResetAndClockSignals(rtl.toplevel)
+    vconfig.resetSignalMap = resetSignalAnalysis            // Transmit reset signal analysis results
+    vconfig.clockSignalMap = clockSignalAnalysis            // Transmit clock signal analysis results
+
     vconfig.timePrecision = config.timePrecision match {
       case null => null
       case v => v.decomposeString                           // 将TimeNumber转换为字符串格式
@@ -929,7 +953,8 @@ case class SpinalSimConfig(
                             var _timeScale         : TimeNumber = null,
                             var _testPath          : String = "$WORKSPACE/$COMPILED/$TEST",
                             var _waveFilePrefix    : String = null,
-                            var _ghdlFlags: GhdlFlags = GhdlFlags()
+                            var _ghdlFlags: GhdlFlags = GhdlFlags(),
+                            var _enableRtlAutoReset: Boolean = true  // RTL analysis auto reset function, default enabled
   ){
 
 
@@ -1154,6 +1179,11 @@ case class SpinalSimConfig(
     this
   }
 
+  def disableRtlAutoReset: this.type = {
+    _enableRtlAutoReset = false
+    this
+  }
+
   def addOptions(parser: scopt.OptionParser[Unit]): Unit = {
     import parser._
     opt[Unit]("trace-fst") action { (v, c) => this.withFstWave }
@@ -1349,20 +1379,21 @@ case class SpinalSimConfig(
         // 创建Verilator后端配置
         // 包含所有必要的编译和仿真参数
         val vConfig = SpinalVerilatorBackendConfig[T](
-          rtl = report,                                    // RTL报告
-          waveFormat = _waveFormat,                        // 波形格式
-          maxCacheEntries = _maxCacheEntries,              // 最大缓存条目数
-          cachePath = if (!_disableCache) (if (_cachePath != null) _cachePath else s"${_workspacePath}/.cache") else null, // 缓存路径
-          workspacePath = s"${_workspacePath}/${_workspaceName}", // 工作空间路径
-          vcdPath = wavePath,                              // VCD文件路径
-          vcdPrefix = _waveFilePrefix,                     // 波形文件前缀
-          workspaceName = "verilator",                     // 工作空间名称
-          waveDepth = _waveDepth,                          // 波形深度
-          optimisationLevel = _optimisationLevel,          // 优化级别
-          simulatorFlags = _simulatorFlags,                // 仿真器标志
-          withCoverage = _withCoverage,                    // 是否启用覆盖率 
-          timePrecision = _timePrecision,                  // 时间精度
-          testPath = _testPath                             // 测试路径
+          rtl = report,
+          waveFormat = _waveFormat,
+          maxCacheEntries = _maxCacheEntries,
+          cachePath = if (!_disableCache) (if (_cachePath != null) _cachePath else s"${_workspacePath}/.cache") else null,
+          workspacePath = s"${_workspacePath}/${_workspaceName}",
+          vcdPath = wavePath,
+          vcdPrefix = _waveFilePrefix,
+          workspaceName = "verilator",
+          waveDepth = _waveDepth,
+          optimisationLevel = _optimisationLevel,
+          simulatorFlags = _simulatorFlags,
+          withCoverage = _withCoverage,
+          timePrecision = _timePrecision,
+          testPath = _testPath,
+          enableRtlAutoReset = _enableRtlAutoReset
         )
 
         // 创建并初始化Verilator后端

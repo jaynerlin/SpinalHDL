@@ -62,22 +62,25 @@ import java.io.FileFilter
  * 包含Verilator仿真器的所有配置参数
  */
 class VerilatorBackendConfig{
-  var signals                = ArrayBuffer[Signal]()      // 需要访问的信号列表
-  var optimisationLevel: Int = 2                          // 优化级别 (0-3)
-  val rtlSourcesPaths        = ArrayBuffer[String]()      // RTL源文件路径列表
-  val rtlIncludeDirs         = ArrayBuffer[String]()      // 包含目录列表
-  var toplevelName: String   = null                       // 顶层模块名称
-  var maxCacheEntries: Int   = 100                        // 最大缓存条目数
-  var cachePath: String      = null                       // 缓存路径
-  var workspacePath: String  = null                       // 工作空间路径
-  var workspaceName: String  = null                       // 工作空间名称
-  var vcdPath: String        = null                       // VCD波形文件路径
-  var vcdPrefix: String      = null                       // VCD文件前缀
-  var waveFormat             : WaveFormat = WaveFormat.NONE // 波形格式 (VCD/FST/NONE)
-  var waveDepth:Int          = 1                          // 波形深度 (0表示全部)
-  var simulatorFlags         = ArrayBuffer[String]()      // 仿真器标志
-  var withCoverage           = false                      // 是否启用覆盖率
-  var timePrecision: String  = null                       // 时间精度
+  var signals                = ArrayBuffer[Signal]()
+  var optimisationLevel: Int = 2
+  val rtlSourcesPaths        = ArrayBuffer[String]()
+  val rtlIncludeDirs         = ArrayBuffer[String]()
+  var toplevelName: String   = null
+  var maxCacheEntries: Int   = 100
+  var cachePath: String      = null
+  var workspacePath: String  = null
+  var workspaceName: String  = null
+  var vcdPath: String        = null
+  var vcdPrefix: String      = null
+  var waveFormat             : WaveFormat = WaveFormat.NONE
+  var waveDepth:Int          = 1 // 0 => all
+  var simulatorFlags         = ArrayBuffer[String]()
+  var withCoverage           = false
+  var timePrecision: String  = null
+  var autoInitialReset: Boolean = true           
+  var resetSignalMap: Map[String, (String, Boolean, Boolean)] = Map.empty
+  var clockSignalMap: Map[String, Boolean] = Map.empty
 }
 
 /**
@@ -610,31 +613,118 @@ ${    val signalInits = for((signal, id) <- config.signals.zipWithIndex) yield {
       tfp.set_time_resolution(${if (useTimePrecision) "Verilated::threadContextp()->timeprecisionString()" else "VL_TIME_PRECISION_STR" }); // 设置时间分辨率
       tfp.open((std::string(wavePath) + "wave" + ".${format.ext}").c_str());              // 打开波形文件：<wavePath>wave.${format.ext}
       #endif
+      this->name = name;
+      this->time_precision = ${if (useTimePrecision) "Verilated::timeprecision()" else "VL_TIME_PRECISION" };
 
-      // 第8步：设置仿真元数据
-      this->name = name;                                                                    // 保存仿真实例名称
-      this->time_precision = ${if (useTimePrecision) "Verilated::timeprecision()" else "VL_TIME_PRECISION" }; // 获取时间精度
+      if (${config.autoInitialReset}) {
+          performAutoInitialReset();
+      }
     }
 
-    /**
-     * 析构函数 - 清理仿真资源
-     *
-     * 清理流程：
-     * 1. 释放所有信号访问器
-     * 2. 完成波形记录并关闭文件
-     * 3. 生成代码覆盖率报告（如果启用）
-     * 4. 调用Verilator清理函数
-     * 5. 释放顶层模块实例
-     *
-     * 注意：析构函数确保所有资源都被正确释放，避免内存泄漏
-     */
-    virtual ~Wrapper_${uniqueId}(){
-      // 第1步：释放信号访问器
-      for(int idx = 0; idx < ${config.signals.length}; idx++){
-          delete signalAccess[idx];                                                         // 释放每个信号访问器
-      }
+    void performAutoInitialReset() {
+        ${
+          import scala.collection.mutable
 
-      // 第2步：完成波形记录
+          val resetSignals = config.signals.filter { signal =>
+            config.resetSignalMap.contains(signal.path.last)
+          }
+
+          if (resetSignals.nonEmpty) {
+            val codeBuilder = new StringBuilder()
+
+            case class ResetInfo(signal: Signal, resetName: String) {
+              // Get reset information from RTL analysis results
+              val (polarityDesc, isAsync, isActiveLow) = config.resetSignalMap(signal.path.last)
+
+              def assertValue = if (isActiveLow) 0 else 1
+              def deassertValue = if (isActiveLow) 1 else 0
+              def resetTypeDesc = if (isAsync) "ASYNC" else "SYNC"
+            }
+
+            val resetInfos = resetSignals.map { signal =>
+              val resetName = signal.path.map(_.replace("$", "__024").replace("__", "___05F")).mkString("->")
+              ResetInfo(signal, resetName)
+            }
+
+            codeBuilder.append(s"""
+        // Found ${resetInfos.length} reset signals based on RTL analysis
+        // Set all reset signals to non-active state (ensure initial state)""")
+
+            resetInfos.foreach { resetInfo =>
+              codeBuilder.append(s"""
+        top->${resetInfo.resetName} = ${resetInfo.deassertValue};  // Non-active: ${resetInfo.signal.path.mkString("/")} (${resetInfo.polarityDesc} active, ${resetInfo.resetTypeDesc})""")
+            }
+
+            codeBuilder.append("""
+        top->eval();
+        // Activate all asynchronous reset signals""")
+        
+            resetInfos.foreach { resetInfo =>
+              codeBuilder.append(s"""
+        top->${resetInfo.resetName} = ${resetInfo.assertValue};   // Activate reset: ${resetInfo.signal.path.mkString("/")}""")
+            }
+
+            codeBuilder.append("""
+        top->eval();
+        // Generate clock edges based on RTL analysis to propagate synchronous reset signals""")
+
+            val discoveredClocks = config.clockSignalMap.filter { case (clockName, _) =>
+              config.signals.exists(_.path.last == clockName)
+            }
+
+            if (discoveredClocks.nonEmpty) {
+              codeBuilder.append(s"""
+        // Found ${discoveredClocks.size} clocks based on RTL analysis
+        for(int cycle = 0; cycle < 3; cycle++) {""")
+
+              discoveredClocks.foreach { case (clockName, isRisingEdge) =>
+                val clockPath = config.signals.find(_.path.last == clockName).get.path.map(_.replace("$", "__024").replace("__", "___05F")).mkString("->")
+
+                if (isRisingEdge) {
+                  codeBuilder.append(s"""
+            top->${clockPath} = 0;
+            top->eval();
+            top->${clockPath} = 1;
+            top->eval();""")
+                } else {
+                  codeBuilder.append(s"""
+            top->${clockPath} = 1;
+            top->eval();
+            top->${clockPath} = 0;
+            top->eval();""")
+                }
+              }
+
+              codeBuilder.append("""
+        }""") 
+            } else {
+              codeBuilder.append("""
+        // No clocks found, skipping clock edge generation""")
+            }
+
+            resetInfos.foreach { resetInfo =>
+              codeBuilder.append(s"""
+        top->${resetInfo.resetName} = ${resetInfo.deassertValue}; // Release reset: ${resetInfo.signal.path.mkString("/")}""")
+            }
+
+            val discoveredClocksCount = discoveredClocks.size
+
+            codeBuilder.append(s"""
+        top->eval();
+
+        // Reset sequence: Non-active -> eval -> Activate -> eval -> RTL analysis clock edges -> Release -> eval
+        // Processed ${resetInfos.length} reset signals: from RTL analysis
+        // Processed ${discoveredClocksCount} clocks: from RTL analysis, supports rising/falling edge auto-recognition
+        // Supports asynchronous/synchronous reset, multiple polarities, multiple clock edges, highest generality""")
+
+            codeBuilder.toString()
+          } else {
+            "// No reset signals found in RTL analysis, skipping auto reset sequence"
+          }
+        }
+    }
+
+    void close(){
       #ifdef TRACE
       if(waveEnabled) tfp.dump((vluint64_t)time);                                          // 记录最后一个时间点的波形
       tfp.flush();                                                                          // 刷新波形缓冲区
@@ -977,7 +1067,6 @@ JNIEXPORT void API JNICALL ${jniPrefix}disableWave_1${uniqueId}
        | --output-split-ctrace 500
        | -Wno-WIDTH -Wno-UNOPTFLAT -Wno-CMPCONST -Wno-UNSIGNED
        | --x-assign unique
-       | --x-initial-edge
        | --trace-depth ${config.waveDepth}
        | -O3
        | -CFLAGS -O${config.optimisationLevel}
