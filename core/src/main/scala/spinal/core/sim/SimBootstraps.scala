@@ -103,7 +103,8 @@ case class SpinalVerilatorBackendConfig[T <: Component](
                                                          simulatorFlags    : ArrayBuffer[String] = ArrayBuffer[String](),
                                                          withCoverage      : Boolean,
                                                          timePrecision     : TimeNumber = null,
-                                                         testPath          : String
+                                                         testPath          : String,
+                                                         enableRtlAutoReset: Boolean = true  // RTL分析自动复位功能开关
 )
 
 
@@ -139,6 +140,7 @@ object SpinalVerilatorBackend {
     GraphUtils.walkAllComponents(toplevel, component => {
       component.dslBody.walkStatements { statement =>
         statement match {
+          // 识别需要复位的寄存器
           case bt: BaseType if bt.isReg =>
             val cd = bt.clockDomain
 
@@ -205,7 +207,7 @@ object SpinalVerilatorBackend {
     vconfig.optimisationLevel = optimisationLevel          // 优化级别
     vconfig.simulatorFlags    = simulatorFlags             // 仿真器标志
     vconfig.withCoverage      = withCoverage                // 覆盖率配置
-    vconfig.autoInitialReset  = true                        // 启用自动初始复位（替代--x-initial-edge）
+    vconfig.autoInitialReset  = enableRtlAutoReset          // RTL分析自动复位功能开关
 
     // 2.5. 基于RTL分析的复位和时钟信号发现和映射
     // 这是真正基于SpinalHDL内部机制的普适性信号分析
@@ -982,7 +984,8 @@ case class SpinalSimConfig(
                             var _timeScale         : TimeNumber = null,
                             var _testPath          : String = "$WORKSPACE/$COMPILED/$TEST",
                             var _waveFilePrefix    : String = null,
-                            var _ghdlFlags: GhdlFlags = GhdlFlags()
+                            var _ghdlFlags: GhdlFlags = GhdlFlags(),
+                            var _enableRtlAutoReset: Boolean = true  // RTL分析自动复位功能开关，默认启用
   ){
 
 
@@ -1207,6 +1210,19 @@ case class SpinalSimConfig(
     this
   }
 
+  /**
+   * 禁用RTL分析自动复位功能
+   *
+   * 禁用后将不会执行自动复位序列，需要用户手动处理复位逻辑。
+   * 主要用于调试或与传统仿真方式兼容的场景。
+   *
+   * @return 当前配置对象，支持链式调用
+   */
+  def disableRtlAutoReset: this.type = {
+    _enableRtlAutoReset = false
+    this
+  }
+
   def addOptions(parser: scopt.OptionParser[Unit]): Unit = {
     import parser._
     opt[Unit]("trace-fst") action { (v, c) => this.withFstWave }
@@ -1413,9 +1429,10 @@ case class SpinalSimConfig(
           waveDepth = _waveDepth,                          // 波形深度
           optimisationLevel = _optimisationLevel,          // 优化级别
           simulatorFlags = _simulatorFlags,                // 仿真器标志
-          withCoverage = _withCoverage,                    // 是否启用覆盖率 
+          withCoverage = _withCoverage,                    // 是否启用覆盖率
           timePrecision = _timePrecision,                  // 时间精度
-          testPath = _testPath                             // 测试路径
+          testPath = _testPath,                            // 测试路径
+          enableRtlAutoReset = _enableRtlAutoReset         // RTL分析自动复位功能开关
         )
 
         // 创建并初始化Verilator后端
