@@ -51,7 +51,7 @@ package spinal.core.sim
 import java.io.{File, PrintWriter}
 import org.apache.commons.io.FileUtils
 import spinal.core.internals.{BaseNode, DeclarationStatement, GraphUtils, PhaseCheck, PhaseContext, PhaseNetlist}
-import spinal.core.{BaseType, Bits, BlackBox, Bool, Component, GlobalData, InComponent, Mem, MemSymbolesMapping, MemSymbolesTag, SInt, ScopeProperty, SpinalConfig, SpinalEnumCraft, SpinalReport, SpinalTag, SpinalTagReady, TimeNumber, UInt, Verilator, noLatchCheck}
+import spinal.core.{ASYNC, BaseType, Bits, BlackBox, Bool, Component, GlobalData, HIGH, InComponent, LOW, Mem, MemSymbolesMapping, MemSymbolesTag, RISING, SInt, ScopeProperty, SpinalConfig, SpinalEnumCraft, SpinalReport, SpinalTag, SpinalTagReady, SYNC, TimeNumber, UInt, Verilator, noLatchCheck}
 import spinal.sim._
 
 import scala.collection.mutable
@@ -115,12 +115,58 @@ case class SpinalVerilatorBackendConfig[T <: Component](
  * 2. 从SpinalReport中提取信号信息并建立信号映射
  * 3. 处理SpinalHDL特有的数据类型和标签
  * 4. 创建并配置底层的VerilatorBackend实例
+ * 5. 基于RTL分析进行复位信号发现和映射
  *
  * 设计模式：适配器模式 + 工厂模式
  * - 适配器：将SpinalHDL接口适配到Verilator接口
  * - 工厂：根据配置创建配置好的VerilatorBackend实例
  */
 object SpinalVerilatorBackend {
+
+  /**
+   * 基于RTL分析的复位和时钟信号发现系统
+   *
+   * 这个方法遍历整个SpinalHDL设计，分析所有寄存器的时钟域配置，
+   * 提取复位信号和时钟信号的准确信息，包括极性、类型等。
+   */
+  private def analyzeResetAndClockSignals(toplevel: Component): (Map[String, (String, Boolean, Boolean)], Map[String, Boolean]) = {
+    import scala.collection.mutable
+
+    val resetSignalMap = mutable.Map[String, (String, Boolean, Boolean)]()
+    val clockSignalMap = mutable.Map[String, Boolean]()
+
+    // 遍历整个RTL设计，收集时钟域信息
+    GraphUtils.walkAllComponents(toplevel, component => {
+      component.dslBody.walkStatements { statement =>
+        statement match {
+          case bt: BaseType if bt.isReg =>
+            val cd = bt.clockDomain
+
+            // 收集时钟信号信息
+            val clockSignal = cd.clock
+            val clockName = clockSignal.getName()
+            val isRisingEdge = cd.config.clockEdge == RISING
+            clockSignalMap(clockName) = isRisingEdge
+
+            // 如果时钟域有复位信号，记录它
+            if (cd.hasResetSignal) {
+              val resetSignal = cd.reset
+              val resetName = resetSignal.getName()
+              val isAsync = cd.config.resetKind == ASYNC
+              val isActiveLow = cd.config.resetActiveLevel == LOW
+              val polarityDesc = if (isActiveLow) "LOW" else "HIGH"
+
+              // 记录复位信号信息：(极性描述, 是否异步, 是否低电平有效)
+              resetSignalMap(resetName) = (polarityDesc, isAsync, isActiveLow)
+            }
+
+          case _ =>
+        }
+      }
+    })
+
+    (resetSignalMap.toMap, clockSignalMap.toMap)
+  }
 
   /**
    * 创建配置好的VerilatorBackend实例
@@ -159,6 +205,13 @@ object SpinalVerilatorBackend {
     vconfig.optimisationLevel = optimisationLevel          // 优化级别
     vconfig.simulatorFlags    = simulatorFlags             // 仿真器标志
     vconfig.withCoverage      = withCoverage                // 覆盖率配置
+    vconfig.autoInitialReset  = true                        // 启用自动初始复位（替代--x-initial-edge）
+
+    // 2.5. 基于RTL分析的复位和时钟信号发现和映射
+    // 这是真正基于SpinalHDL内部机制的普适性信号分析
+    val (resetSignalAnalysis, clockSignalAnalysis) = analyzeResetAndClockSignals(rtl.toplevel)
+    vconfig.resetSignalMap = resetSignalAnalysis            // 传递复位信号分析结果
+    vconfig.clockSignalMap = clockSignalAnalysis            // 传递时钟信号分析结果
 
     // 3. 时间精度转换（SpinalHDL TimeNumber -> String）
     vconfig.timePrecision = config.timePrecision match {
