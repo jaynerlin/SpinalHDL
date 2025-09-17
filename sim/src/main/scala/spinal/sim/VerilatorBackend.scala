@@ -620,12 +620,18 @@ ${    val signalInits = for((signal, id) <- config.signals.zipWithIndex) yield {
 
       // 第9步：执行自动初始复位序列（替代--x-initial-edge）
       // 基于Verilog静态初始化方法，等效于initial块逻辑
-      if (${config.autoInitialReset}) {
-          performAutoInitialReset();
+      ${
+        if (config.autoInitialReset) {
+          "performAutoInitialReset();"
+        } else {
+          "// RTL auto reset disabled, skipping performAutoInitialReset()"
+        }
       }
     }
 
-    void performAutoInitialReset() {
+    ${
+      if (config.autoInitialReset) {
+        s"""void performAutoInitialReset() {
         ${
           import scala.collection.mutable
 
@@ -700,7 +706,7 @@ ${    val signalInits = for((signal, id) <- config.signals.zipWithIndex) yield {
               }
 
               codeBuilder.append("""
-        }""") 
+        }""")
             } else {
               codeBuilder.append("""
         // No clocks found, skipping clock edge generation""")
@@ -726,6 +732,10 @@ ${    val signalInits = for((signal, id) <- config.signals.zipWithIndex) yield {
             "// No reset signals found in RTL analysis, skipping auto reset sequence"
           }
         }
+    }"""
+      } else {
+        "// performAutoInitialReset function not generated (RTL auto reset disabled)"
+      }
     }
 
     /**

@@ -104,7 +104,7 @@ case class SpinalVerilatorBackendConfig[T <: Component](
                                                          withCoverage      : Boolean,
                                                          timePrecision     : TimeNumber = null,
                                                          testPath          : String,
-                                                         enableRtlAutoReset: Boolean = true  // RTL分析自动复位功能开关
+                                                         enableRtlAutoReset: Boolean = false  // RTL分析自动复位功能开关
 )
 
 
@@ -130,18 +130,20 @@ object SpinalVerilatorBackend {
    * 这个方法遍历整个SpinalHDL设计，分析所有寄存器的时钟域配置，
    * 提取复位信号和时钟信号的准确信息，包括极性、类型等。
    */
-  private def analyzeResetAndClockSignals(toplevel: Component): (Map[String, (String, Boolean, Boolean)], Map[String, Boolean]) = {
+  private def analyzeResetAndClockSignals(toplevel: Component, enableRtlAutoReset: Boolean): (Map[String, (String, Boolean, Boolean)], Map[String, Boolean]) = {
     import scala.collection.mutable
 
     val resetSignalMap = mutable.Map[String, (String, Boolean, Boolean)]()
     val clockSignalMap = mutable.Map[String, Boolean]()
+    val allRegisters = mutable.Map[BaseType, Component]()  // 收集所有寄存器及其所属组件
 
-    // 遍历整个RTL设计，收集时钟域信息
+    // 单次遍历：收集寄存器、时钟和复位信号，同时检测问题
     GraphUtils.walkAllComponents(toplevel, component => {
       component.dslBody.walkStatements { statement =>
         statement match {
           // 识别需要复位的寄存器
           case bt: BaseType if bt.isReg =>
+            allRegisters(bt) = component  // 记录寄存器及其所属组件
             val cd = bt.clockDomain
 
             // 收集时钟信号信息
@@ -157,6 +159,36 @@ object SpinalVerilatorBackend {
               val isAsync = cd.config.resetKind == ASYNC
               val isActiveLow = cd.config.resetActiveLevel == LOW
               val polarityDesc = if (isActiveLow) "LOW" else "HIGH"
+
+              // 检查这个复位信号是否本身是一个寄存器（仅在启用自动复位时检查）
+              if (enableRtlAutoReset) {
+                allRegisters.find(_._1 == resetSignal) match {
+                  case Some((resetReg, ownerComponent)) =>
+                    // 这是一个寄存器被用作复位信号的情况
+                    val hasInitValue = resetReg.hasInit
+                    val isInResetDomain = resetReg.clockDomain.hasResetSignal
+
+                    // 检查是否存在潜在问题
+                    if (!hasInitValue || !isInResetDomain) {
+                      // 发出警告但不添加到复位信号映射中
+                      val componentPath = ownerComponent.getPath()
+                      val issues = mutable.ArrayBuffer[String]()
+                      if (!hasInitValue) issues += "没有初始值"
+                      if (!isInResetDomain) issues += "位于无复位时钟域中"
+
+                      println(s"[RTL自动复位警告] 检测到潜在的硬件设计问题:")
+                      println(s"   复位信号: $resetName")
+                      println(s"   所属组件: $componentPath")
+                      println(s"   问题: ${issues.mkString(", ")}")
+                      println(s"   风险: 该寄存器在真实硬件中可能有随机初始值，导致不可预测的复位行为")
+                      println(s"   建议: 为该寄存器添加适当的初始值或将其放置在有复位的时钟域中")
+                      println(s"   注意: 此复位信号将被排除在RTL自动复位处理之外，以避免掩盖硬件问题")
+                      println()
+                    }
+                  case None =>
+                    // 这是一个正常的复位信号（不是寄存器），可以安全处理
+                }
+              }
 
               // 记录复位信号信息：(极性描述, 是否异步, 是否低电平有效)
               resetSignalMap(resetName) = (polarityDesc, isAsync, isActiveLow)
@@ -209,11 +241,17 @@ object SpinalVerilatorBackend {
     vconfig.withCoverage      = withCoverage                // 覆盖率配置
     vconfig.autoInitialReset  = enableRtlAutoReset          // RTL分析自动复位功能开关
 
-    // 2.5. 基于RTL分析的复位和时钟信号发现和映射
-    // 这是真正基于SpinalHDL内部机制的普适性信号分析
-    val (resetSignalAnalysis, clockSignalAnalysis) = analyzeResetAndClockSignals(rtl.toplevel)
-    vconfig.resetSignalMap = resetSignalAnalysis            // 传递复位信号分析结果
-    vconfig.clockSignalMap = clockSignalAnalysis            // 传递时钟信号分析结果
+    // 2.5. 基于RTL分析的复位和时钟信号发现和映射（仅在启用自动复位时执行）
+    if (enableRtlAutoReset) {
+      // 这是真正基于SpinalHDL内部机制的普适性信号分析
+      val (resetSignalAnalysis, clockSignalAnalysis) = analyzeResetAndClockSignals(rtl.toplevel, enableRtlAutoReset)
+      vconfig.resetSignalMap = resetSignalAnalysis            // 传递复位信号分析结果
+      vconfig.clockSignalMap = clockSignalAnalysis            // 传递时钟信号分析结果
+    } else {
+      // 禁用自动复位时，传递空映射
+      vconfig.resetSignalMap = Map.empty
+      vconfig.clockSignalMap = Map.empty
+    }
 
     // 3. 时间精度转换（SpinalHDL TimeNumber -> String）
     vconfig.timePrecision = config.timePrecision match {
@@ -985,7 +1023,7 @@ case class SpinalSimConfig(
                             var _testPath          : String = "$WORKSPACE/$COMPILED/$TEST",
                             var _waveFilePrefix    : String = null,
                             var _ghdlFlags: GhdlFlags = GhdlFlags(),
-                            var _enableRtlAutoReset: Boolean = true  // RTL分析自动复位功能开关，默认启用
+                            var _enableRtlAutoReset: Boolean = false  // RTL分析自动复位功能开关，默认启用
   ){
 
 
@@ -1218,8 +1256,8 @@ case class SpinalSimConfig(
    *
    * @return 当前配置对象，支持链式调用
    */
-  def disableRtlAutoReset: this.type = {
-    _enableRtlAutoReset = false
+  def withAutoReset: this.type = {
+    _enableRtlAutoReset = true
     this
   }
 
