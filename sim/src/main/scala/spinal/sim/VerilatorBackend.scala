@@ -625,33 +625,10 @@ ${    val signalInits = for((signal, id) <- config.signals.zipWithIndex) yield {
       }
     }
 
-    /**
-     * 自动初始复位方法 - 基于Verilog静态初始化方法
-     *
-     * 功能说明：
-     * 等效于Verilog中的initial块逻辑，在仿真开始时自动执行复位序列。
-     * 这种方法完全替代了--x-initial-edge选项，提供更精确和可控的初始化。
-     *
-     * 实现原理：
-     * 1. 智能识别所有复位信号（基于信号名称模式和SpinalHDL约定）
-     * 2. 自动检测复位极性（高电平有效/低电平有效）
-     * 3. 执行标准复位序列：激活复位 → eval() → 释放复位 → eval()
-     * 4. 确保所有跨时钟域组件（BufferCC等）从确定状态开始
-     *
-     * 优势：
-     * - 基于标准Verilog语义，在时间0自然产生边沿事件
-     * - 自动适应不同的复位信号模式和极性
-     * - 无需手动配置，适用于任何SpinalHDL设计
-     * - 完全解决BufferCC初始化不确定性问题
-     */
     void performAutoInitialReset() {
         ${
-          // 基于SpinalHDL RTL分析的纯粹复位信号发现系统
-          // RTL分析在core包中完成，这里直接使用分析结果
-
           import scala.collection.mutable
 
-          // 基于RTL分析发现的复位信号
           val resetSignals = config.signals.filter { signal =>
             config.resetSignalMap.contains(signal.path.last)
           }
@@ -659,9 +636,8 @@ ${    val signalInits = for((signal, id) <- config.signals.zipWithIndex) yield {
           if (resetSignals.nonEmpty) {
             val codeBuilder = new StringBuilder()
 
-            // 基于RTL分析的纯粹复位信号信息结构
             case class ResetInfo(signal: Signal, resetName: String) {
-              // 从RTL分析结果中获取复位信息
+              // Get reset information from RTL analysis results
               val (polarityDesc, isAsync, isActiveLow) = config.resetSignalMap(signal.path.last)
 
               def assertValue = if (isActiveLow) 0 else 1
@@ -669,75 +645,53 @@ ${    val signalInits = for((signal, id) <- config.signals.zipWithIndex) yield {
               def resetTypeDesc = if (isAsync) "ASYNC" else "SYNC"
             }
 
-            // 构建复位信号信息列表
             val resetInfos = resetSignals.map { signal =>
               val resetName = signal.path.map(_.replace("$", "__024").replace("__", "___05F")).mkString("->")
               ResetInfo(signal, resetName)
             }
 
             codeBuilder.append(s"""
-        // SpinalHDL基于RTL分析的纯粹自动复位序列
-        // 等效于Verilog: initial begin ... end
-        // 完全替代--x-initial-edge选项
-        // 基于RTL分析发现${resetInfos.length}个复位信号
-
-        // 第1步：将所有复位信号设置为非激活状态（确保初始状态）""")
+        // Found ${resetInfos.length} reset signals based on RTL analysis
+        // Set all reset signals to non-active state (ensure initial state)""")
 
             resetInfos.foreach { resetInfo =>
               codeBuilder.append(s"""
-        top->${resetInfo.resetName} = ${resetInfo.deassertValue};  // 非激活: ${resetInfo.signal.path.mkString("/")} (${resetInfo.polarityDesc} active, ${resetInfo.resetTypeDesc})""")
+        top->${resetInfo.resetName} = ${resetInfo.deassertValue};  // Non-active: ${resetInfo.signal.path.mkString("/")} (${resetInfo.polarityDesc} active, ${resetInfo.resetTypeDesc})""")
             }
 
-
-
             codeBuilder.append("""
-
-        // 第2步：执行eval()稳定初始状态
         top->eval();
-
-        // 第3步：激活所有复位信号""")
+        // Activate all asynchronous reset signals""")
 
             resetInfos.foreach { resetInfo =>
               codeBuilder.append(s"""
-        top->${resetInfo.resetName} = ${resetInfo.assertValue};   // 激活复位: ${resetInfo.signal.path.mkString("/")} (RTL分析)""")
+        top->${resetInfo.resetName} = ${resetInfo.assertValue};   // Activate reset: ${resetInfo.signal.path.mkString("/")}""")
             }
 
-
-
             codeBuilder.append("""
-
-        // 第4步：执行eval()使复位生效
         top->eval();
+        // Generate clock edges based on RTL analysis to propagate synchronous reset signals""")
 
-        // 第5步：基于RTL分析产生时钟边沿让同步化复位信号传播
-        // 这是关键步骤：让BufferCC生成正确的同步化复位信号""")
-
-            // 基于RTL分析发现的时钟信号
             val discoveredClocks = config.clockSignalMap.filter { case (clockName, _) =>
               config.signals.exists(_.path.last == clockName)
             }
 
             if (discoveredClocks.nonEmpty) {
               codeBuilder.append(s"""
-        // 基于RTL分析发现${discoveredClocks.size}个时钟信号，生成时钟边沿
+        // Found ${discoveredClocks.size} clocks based on RTL analysis
         for(int cycle = 0; cycle < 3; cycle++) {""")
 
               discoveredClocks.foreach { case (clockName, isRisingEdge) =>
                 val clockPath = config.signals.find(_.path.last == clockName).get.path.map(_.replace("$", "__024").replace("__", "___05F")).mkString("->")
-                val edgeDesc = if (isRisingEdge) "上升沿" else "下降沿"
 
                 if (isRisingEdge) {
-                  // 上升沿：0 -> 1
                   codeBuilder.append(s"""
-            // 产生${clockName}边沿 (${edgeDesc}, RTL分析)
             top->${clockPath} = 0;
             top->eval();
             top->${clockPath} = 1;
             top->eval();""")
                 } else {
-                  // 下降沿：1 -> 0
                   codeBuilder.append(s"""
-            // 产生${clockName}边沿 (${edgeDesc}, RTL分析)
             top->${clockPath} = 1;
             top->eval();
             top->${clockPath} = 0;
@@ -749,43 +703,27 @@ ${    val signalInits = for((signal, id) <- config.signals.zipWithIndex) yield {
         }""") 
             } else {
               codeBuilder.append("""
-        // 未发现可访问的时钟信号，跳过时钟边沿生成""")
+        // No clocks found, skipping clock edge generation""")
             }
-
-        // 第6步：释放所有复位信号（回到非激活状态）""")
 
             resetInfos.foreach { resetInfo =>
               codeBuilder.append(s"""
-        top->${resetInfo.resetName} = ${resetInfo.deassertValue}; // 释放复位: ${resetInfo.signal.path.mkString("/")} (RTL分析)""")
+        top->${resetInfo.resetName} = ${resetInfo.deassertValue}; // Release reset: ${resetInfo.signal.path.mkString("/")}""")
             }
-
-
 
             val discoveredClocksCount = discoveredClocks.size
 
             codeBuilder.append(s"""
-
-        // 第7步：执行最终eval()完成初始化序列
         top->eval();
 
-        // SpinalHDL基于RTL分析的纯粹自动复位序列完成
-        // 复位序列：非激活 → eval → 激活 → eval → RTL分析时钟边沿 → 释放 → eval
-        // 处理了${resetInfos.length}个复位信号：全部来自RTL分析
-        // 处理了${discoveredClocksCount}个时钟信号：全部来自RTL分析，支持上升沿/下降沿自动识别
-        // 完全消除硬编码和名称模式判断，RTL分析提供最高精度和优雅性
-        // 支持异步/同步复位、多种极性、多种时钟边沿，具有最高的普适性
-        // 通过RTL分析的时钟边沿确保同步化复位信号正确传播
-        // 所有BufferCC和跨时钟域组件现在都处于确定的初始状态
-        // 仿真结果将具有完全的一致性和可重复性""")
+        // Reset sequence: Non-active -> eval -> Activate -> eval -> RTL analysis clock edges -> Release -> eval
+        // Processed ${resetInfos.length} reset signals: from RTL analysis
+        // Processed ${discoveredClocksCount} clocks: from RTL analysis, supports rising/falling edge auto-recognition
+        // Supports asynchronous/synchronous reset, multiple polarities, multiple clock edges, highest generality""")
 
             codeBuilder.toString()
           } else {
-            """
-        // 未检测到复位信号，执行基本稳定化序列
-        // 这确保了仿真的基本稳定性
-        for(int i = 0; i < 5; i++) {
-            top->eval();
-        }"""
+            "// No reset signals found in RTL analysis, skipping auto reset sequence"
           }
         }
     }
