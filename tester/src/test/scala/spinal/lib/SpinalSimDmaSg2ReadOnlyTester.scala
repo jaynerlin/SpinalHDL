@@ -26,7 +26,7 @@ class SpinalSimDmaSg2ReadOnlyTester extends SpinalAnyFunSuite{
     )
     val ctrlParam = p.getCtrlParam()
 
-    val compiled = SimConfig.withFstWave.compile(
+    val compiled = SimConfig.withFstWave.withAutoReset.compile(
       new DmaSgReadOnlyComp(p, ctrlParam, ClockDomain.external("push"), ClockDomain.external("pop"))
     )
     compiled.doSim(seed = 42){dut =>
