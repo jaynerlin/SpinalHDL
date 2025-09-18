@@ -49,7 +49,7 @@ case class UsbDeviceCtrlTesterTop() extends Component {
 
 class UsbDeviceCtrlTester extends SpinalAnyFunSuite{
   for(i <- 43 to 44) test("miaou" + i){
-    SimConfig.compile(UsbDeviceCtrlTesterTop()).doSim(seed = i){ dut =>
+    SimConfig.withAutoReset.compile(UsbDeviceCtrlTesterTop()).doSim(seed = i){ dut =>
       dut.ctrlCd.forkStimulus(1e12/dut.ctrlCd.frequency.getValue.toDouble toLong)
       dut.phyCd.forkStimulus(1e12/dut.phyCd.frequency.getValue.toDouble  toLong)
       val usbAgent = new UsbLsFsPhyAbstractIoAgent(dut.usb, dut.phyCd, dut.phy.fsRatio)
