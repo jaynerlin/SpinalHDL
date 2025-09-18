@@ -29,7 +29,7 @@ object SpinalSimTesterIVerilog extends SpinalSimTester{
 }
 
 object SpinalSimTesterVerilator extends SpinalSimTester{
-  override def SimConfig: SpinalSimConfig = spinal.core.sim.SimConfig.withVerilator
+  override def SimConfig: SpinalSimConfig = spinal.core.sim.SimConfig.withVerilator.withAutoReset
   override def durationFactor: Double = 0.5
   override def designFactor: Double = 0.5
   override def prefix: String = "verilator_"
